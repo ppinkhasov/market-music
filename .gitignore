@@ -1,0 +1,9 @@
+.env
+*.env
+.ipynb
+*.ipynb
+.pyc
+*.pyc
+*.cache
+.cache
+*.cache-xasov
