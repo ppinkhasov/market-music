@@ -4,10 +4,13 @@
 from spotify import getSpotify
 from market_conditions import marketChanges
 
+## this will later push music/market info 
+## to an LCD screen attached to the raspberrypi
+#import LCD1602
+
 #pd,np,ml
 import pandas as pd
 import numpy as np
-
 import keras
 from keras.models import Sequential
 from keras.layers import Conv2D, MaxPooling2D, AveragePooling2D 
@@ -15,6 +18,7 @@ from keras.layers import Dense, Activation, Dropout, Flatten
 from keras.preprocessing import image
 from keras.preprocessing.image import ImageDataGenerator
 import tensorflow as tf
+
 
 
 sp = getSpotify()
