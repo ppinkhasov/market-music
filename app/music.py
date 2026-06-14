@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from . import deepseek_client
-from .models import EmotionResult, MarketSnapshot, MusicPlan, Track
+from .models import EmotionResult, MarketSnapshot, MusicPlan, Track, Weather
 
 # Deterministic fallback: hand-tuned music profile per emotion. Used whenever
 # DeepSeek is not configured or fails.
@@ -107,15 +107,47 @@ def fallback_plan(emotion: str) -> MusicPlan:
     )
 
 
-async def build_music_plan(emotion: EmotionResult, snapshot: MarketSnapshot) -> MusicPlan:
-    """Try DeepSeek, fall back to the deterministic mapping."""
-    plan = await deepseek_client.interpret(emotion, snapshot)
+# Emotions intense enough that mild weather should NOT soften them.
+_HIGH_INTENSITY = {"angry", "chaotic", "manic", "euphoric", "fearful"}
+
+
+def _weather_adjust_fallback(plan: MusicPlan, weather: Optional[Weather]) -> MusicPlan:
+    """Deterministically tint the fallback plan with the weather, so the feature
+    works even without DeepSeek. The market still drives intensity; weather only
+    nudges texture, and never overrides a high-intensity market regime."""
+    if weather is None:
+        return plan
+
+    if weather.is_precip and plan.emotion not in _HIGH_INTENSITY:
+        # Rain/snow/storm over a non-extreme tape -> cozier, lower-energy.
+        cozy = ["rainy day lo-fi", "cozy chill beats", "rainy day jazz"]
+        plan.search_queries = cozy + [q for q in plan.search_queries if q not in cozy]
+        plan.search_queries = plan.search_queries[:10]
+        plan.target_energy = max(0.1, plan.target_energy - 0.2)
+        plan.target_valence = max(0.05, plan.target_valence - 0.1)
+        plan.narrative = (f"{weather.condition} in {weather.location_name} over a "
+                          f"{plan.emotion} market — leaning into cozy, low-key rainy-day sounds.")
+    elif weather.code in (0, 1) and plan.emotion in ("happy", "calm", "euphoric"):
+        # Clear skies brighten an already-positive tape.
+        plan.search_queries = (["sunny day feel good"]
+                               + [q for q in plan.search_queries if q != "sunny day feel good"])[:10]
+        plan.target_valence = min(1.0, plan.target_valence + 0.05)
+        plan.narrative = (f"Clear skies in {weather.location_name} brightening a "
+                          f"{plan.emotion} market — sunny, upbeat picks.")
+    return plan
+
+
+async def build_music_plan(emotion: EmotionResult, snapshot: MarketSnapshot,
+                           weather: Optional[Weather] = None) -> MusicPlan:
+    """Try DeepSeek (which sees the weather directly), else fall back to the
+    deterministic mapping with a weather tint applied."""
+    plan = await deepseek_client.interpret(emotion, snapshot, weather)
     if plan is not None and plan.search_queries:
         # If DeepSeek omitted genres, borrow from the fallback profile.
         if not plan.seed_genres:
             plan.seed_genres = EMOTION_MUSIC.get(emotion.emotion, {}).get("genres", [])
         return plan
-    return fallback_plan(emotion.emotion)
+    return _weather_adjust_fallback(fallback_plan(emotion.emotion), weather)
 
 
 async def assemble_tracks(spotify, plan: MusicPlan, limit: int) -> List[Track]:

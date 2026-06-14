@@ -51,6 +51,19 @@
       </div>
     </section>
 
+    <!-- Weather: optional local mood factor -->
+    <section class="card weather-bar">
+      <div class="weather-now" id="weatherNow">
+        <span class="muted">Add your location to fold local weather into the mood.</span>
+      </div>
+      <form class="weather-form" id="weatherForm" autocomplete="off">
+        <input id="locationInput" type="text" inputmode="text"
+               placeholder="City or ZIP — e.g. Seattle or 98101" aria-label="Location" />
+        <button class="btn" type="submit" id="setLocBtn">Set</button>
+        <button class="btn ghost" type="button" id="clearLocBtn" hidden>Clear</button>
+      </form>
+    </section>
+
     <!-- Aggregate signal gauges -->
     <section class="gauges">
       <div class="gauge card">

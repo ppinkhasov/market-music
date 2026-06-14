@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from . import emotion_engine, market_data, music
+from . import emotion_engine, market_data, music, weather as weather_mod
 from .config import settings
-from .models import EmotionResult, MarketSnapshot, MusicPlan, PlaylistInfo
+from .models import EmotionResult, MarketSnapshot, MusicPlan, PlaylistInfo, Weather
 from .spotify_client import SpotifyClient, TokenSet, refresh_token
 
 log = logging.getLogger("market_music")
@@ -89,6 +89,7 @@ class AppState:
     snapshot: Optional[MarketSnapshot] = None
     emotion: Optional[EmotionResult] = None
     music_plan: Optional[MusicPlan] = None
+    weather: Optional[Weather] = None
     updated_at: Optional[str] = None
     last_error: Optional[str] = None
     poll_count: int = 0
@@ -119,6 +120,13 @@ class Engine:
         self._lock: Optional[asyncio.Lock] = None
         self._task: Optional[asyncio.Task] = None
         self._stop: Optional[asyncio.Event] = None
+        # Weather (optional mood factor). Location can be preset via env or set
+        # live in the UI; weather is refreshed on a slower cadence than prices.
+        self._location: Optional[str] = (settings.weather_location.strip() or None)
+        self._weather: Optional[Weather] = None
+        self._weather_fetched_at: float = 0.0
+
+    WEATHER_TTL_SECONDS = 600  # refetch weather at most every 10 minutes
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -176,41 +184,112 @@ class Engine:
 
     # --- polling -----------------------------------------------------------
 
+    async def _refresh_weather(self) -> bool:
+        """Refresh weather if a location is set and the cache is stale.
+        Returns True if the weather condition changed this refresh."""
+        if not self._location:
+            if self._weather is not None:  # location was cleared
+                self._weather = None
+                return True
+            return False
+        if (self._weather is not None
+                and time.time() - self._weather_fetched_at < self.WEATHER_TTL_SECONDS):
+            return False
+        prev_code = self._weather.code if self._weather else None
+        prev_precip = self._weather.is_precip if self._weather else None
+        target = self._location  # snapshot before the network await
+        try:
+            w = await weather_mod.fetch_weather(target)
+        except Exception:
+            log.warning("weather refresh failed for %r", target)
+            return False
+        # Compare-and-swap: discard this result if the location changed (e.g. a
+        # set_location/clear_location ran) while we were fetching, so a stale
+        # refresh can't clobber a newer user selection.
+        if self._location != target:
+            return False
+        self._weather = w
+        self._weather_fetched_at = time.time()
+        return (w.code != prev_code) or (w.is_precip != prev_precip)
+
     async def poll_once(self) -> None:
         snapshot = await asyncio.to_thread(market_data.fetch_snapshot, settings.tracked_assets)
         emotion = emotion_engine.classify(snapshot)
+        weather_changed = await self._refresh_weather()
+        # Snapshot weather once so the plan and the published state.weather are
+        # built from the same value even if a location change races the await.
+        weather_now = self._weather
         ts = datetime.now(timezone.utc).isoformat()
 
         prev_emotion = self.state.emotion.emotion if self.state.emotion else None
         emotion_changed = prev_emotion != emotion.emotion
 
-        # Only (re)build the music plan when the regime changes or we have none.
+        # Rebuild the music plan when the market regime OR the weather changes
+        # (or we have none yet) — so a shift to rain re-tints the music.
         plan = self.state.music_plan
-        if emotion_changed or plan is None or plan.emotion != emotion.emotion:
-            plan = await music.build_music_plan(emotion, snapshot)
+        if (emotion_changed or weather_changed or plan is None
+                or plan.emotion != emotion.emotion):
+            plan = await music.build_music_plan(emotion, snapshot, weather_now)
 
         async with self._lock:
             self.state.snapshot = snapshot
             self.state.emotion = emotion
             self.state.music_plan = plan
+            self.state.weather = weather_now
             self.state.updated_at = ts
             self.state.last_error = None
             self.state.poll_count += 1
             self.state.record_history(emotion, ts)
 
-        log.info("poll #%d: emotion=%s conf=%.2f risk_on=%.2f vol=%.2f",
+        log.info("poll #%d: emotion=%s conf=%.2f risk_on=%.2f vol=%.2f weather=%s",
                  self.state.poll_count, emotion.emotion, emotion.confidence,
-                 snapshot.risk_on_score, snapshot.vol_shock_score)
+                 snapshot.risk_on_score, snapshot.vol_shock_score,
+                 weather_now.condition if weather_now else "n/a")
 
-        if emotion_changed:
+        if emotion_changed or weather_changed:
             await self._auto_sync_all()
 
-    async def _auto_sync_all(self) -> None:
+    # --- location / weather ------------------------------------------------
+
+    async def set_location(self, query: str) -> Weather:
+        """Resolve a city/ZIP, fetch weather, and rebuild the plan immediately.
+        Raises weather.WeatherError on a bad/failed lookup."""
+        w = await weather_mod.fetch_weather(query)  # may raise WeatherError
+        self._location = query.strip()
+        self._weather = w
+        self._weather_fetched_at = time.time()
+        await self._rebuild_plan_now()
+        return w
+
+    async def clear_location(self) -> None:
+        self._location = None
+        self._weather = None
+        self._weather_fetched_at = 0.0
+        await self._rebuild_plan_now()
+
+    async def _rebuild_plan_now(self) -> None:
+        """Rebuild the music plan against the current emotion + weather."""
+        weather_now = self._weather
+        if self.state.emotion is None or self.state.snapshot is None:
+            self.state.weather = weather_now
+            return
+        plan = await music.build_music_plan(self.state.emotion, self.state.snapshot, weather_now)
+        async with self._lock:
+            self.state.music_plan = plan
+            self.state.weather = weather_now
+        # emotion is guaranteed non-None here (early return above).
+        await self._auto_sync_all(plan)
+
+    async def _auto_sync_all(self, plan: Optional[MusicPlan] = None) -> None:
+        # Snapshot the plan once so every session in this pass syncs the same one.
+        if plan is None:
+            async with self._lock:
+                plan = self.state.music_plan
         for session in self.sessions.logged_in_sessions():
             if not session.auto_sync:
                 continue
             try:
-                await self.sync_playlist(session)
+                await self.sync_playlist(session, plan)
             except Exception:
                 log.exception("auto-sync failed for session %s", session.session_id[:8])
 
@@ -234,7 +313,7 @@ class Engine:
             raise RuntimeError("no market state yet")
 
         plan = plan or self.state.music_plan or await music.build_music_plan(
-            self.state.emotion, self.state.snapshot)
+            self.state.emotion, self.state.snapshot, self._weather)
 
         client = await self.ensure_client(session)
 

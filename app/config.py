@@ -45,6 +45,10 @@ class Settings:
     )
     poll_interval_seconds: int = int(os.getenv("POLL_INTERVAL_SECONDS", "45"))
 
+    # --- Weather (optional mood factor) ---
+    # Preset starting location (city or ZIP); can also be set live in the UI.
+    weather_location: str = os.getenv("WEATHER_LOCATION", "")
+
     # --- Playlist ---
     playlist_name: str = os.getenv("PLAYLIST_NAME", "Market Music \U0001F3B6 Live Mood")
     playlist_size: int = int(os.getenv("PLAYLIST_SIZE", "25"))

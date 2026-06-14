@@ -93,6 +93,17 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 20px 60px; }
 .meta-row { display: flex; justify-content: space-between; font-size: 0.78rem; }
 .muted { color: var(--muted); }
 
+/* Weather bar */
+.weather-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; padding: 16px 20px; }
+.weather-now { display: flex; align-items: center; gap: 14px; min-height: 28px; }
+.weather-now .w-emoji { font-size: 30px; line-height: 1; }
+.weather-now .w-main { font-size: 1.05rem; font-weight: 600; }
+.weather-now .w-sub { font-size: 0.78rem; color: var(--muted); }
+.weather-now .w-factor { font-size: 0.72rem; color: var(--accent); margin-top: 2px; }
+.weather-form { display: flex; align-items: center; gap: 8px; }
+.weather-form input { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; font-size: 0.85rem; min-width: 230px; }
+.weather-form input:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+
 /* Gauges */
 .gauges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
 .gauge { padding: 16px; }
