@@ -117,11 +117,17 @@
       if (a.change_1h != null) sub.push("1h " + fmtPct(a.change_1h));
 
       let symText = a.symbol;
+      if (a.kind && a.kind !== "stock") symText += " · " + a.kind;
       if (a.error) symText += " · error";
       else if (!a.market_open) symText += " · closed (last session)";
 
       const left = makeEl("div");
-      left.appendChild(makeEl("div", "a-name", a.name));
+      const nameRow = makeEl("div", "a-name", a.name);
+      if (a.source) {
+        const badge = makeEl("span", "src-badge src-" + a.source, a.source);
+        nameRow.appendChild(badge);
+      }
+      left.appendChild(nameRow);
       left.appendChild(makeEl("div", "a-sym", symText));
 
       const right = makeEl("div", "a-right");

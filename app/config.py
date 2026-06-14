@@ -39,6 +39,11 @@ class Settings:
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
+    # --- Market data provider ---
+    # "yfinance" (free, delayed) or "polygon" (real-time stocks + futures).
+    market_data_provider: str = os.getenv("MARKET_DATA_PROVIDER", "yfinance").lower()
+    polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
+
     # --- Market polling ---
     tracked_assets: List[str] = field(
         default_factory=lambda: _split_csv(os.getenv("TRACKED_ASSETS", "")) or list(DEFAULT_ASSETS)
@@ -68,6 +73,10 @@ class Settings:
     @property
     def deepseek_configured(self) -> bool:
         return bool(self.deepseek_api_key)
+
+    @property
+    def polygon_configured(self) -> bool:
+        return bool(self.polygon_api_key)
 
     # Scopes required for: reading profile, creating/editing playlists, and
     # controlling/reading playback on an active device.

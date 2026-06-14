@@ -128,8 +128,11 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 20px 60px; }
   border: 1px solid transparent; transition: border-color 0.3s;
 }
 .asset:hover { border-color: var(--border); }
-.asset .a-name { font-weight: 600; }
+.asset .a-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .asset .a-sym { color: var(--muted); font-size: 0.74rem; }
+.src-badge { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 6px; border-radius: 6px; font-weight: 700; }
+.src-badge.src-polygon { color: #7c5cff; background: rgba(124,92,255,0.15); }
+.src-badge.src-yfinance { color: var(--muted); background: var(--surface-2); }
 .asset .a-right { text-align: right; }
 .asset .a-price { font-variant-numeric: tabular-nums; }
 .a-chg { font-weight: 700; font-variant-numeric: tabular-nums; }

@@ -29,6 +29,8 @@ class AssetMetrics:
     realized_vol: Optional[float] = None       # annualized intraday realized vol (%)
     trend: str = "flat"                        # "up" | "down" | "flat"
     market_open: bool = False                  # had fresh intraday data this poll
+    source: str = ""                           # "polygon" | "yfinance" (data provenance)
+    kind: str = "equity"                        # "stock" | "future" | "etf" | "index"
     error: Optional[str] = None
 
     def to_dict(self) -> dict:

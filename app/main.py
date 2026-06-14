@@ -93,6 +93,8 @@ async def state(request: Request):
             "spotify_configured": settings.spotify_configured,
             "deepseek_configured": settings.deepseek_configured,
             "tracked_assets": settings.tracked_assets,
+            "market_data_provider": settings.market_data_provider,
+            "polygon_configured": settings.polygon_configured,
         },
         "snapshot": s.snapshot.to_dict() if s.snapshot else None,
         "emotion": s.emotion.to_dict() if s.emotion else None,

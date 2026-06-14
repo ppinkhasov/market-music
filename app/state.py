@@ -213,7 +213,17 @@ class Engine:
         return (w.code != prev_code) or (w.is_precip != prev_precip)
 
     async def poll_once(self) -> None:
-        snapshot = await asyncio.to_thread(market_data.fetch_snapshot, settings.tracked_assets)
+        # Bound the (blocking) fetch so a slow/hung data source can't stall the
+        # poller past its interval. The worker thread can't be cancelled, but
+        # wait_for unblocks the loop; per-call timeouts cap the orphaned thread.
+        budget = max(30, settings.poll_interval_seconds - 5)
+        try:
+            snapshot = await asyncio.wait_for(
+                asyncio.to_thread(market_data.fetch_snapshot), timeout=budget)
+        except asyncio.TimeoutError:
+            self.state.last_error = "market data fetch timed out"
+            log.warning("market data fetch timed out after %ss", budget)
+            return
         emotion = emotion_engine.classify(snapshot)
         weather_changed = await self._refresh_weather()
         # Snapshot weather once so the plan and the published state.weather are

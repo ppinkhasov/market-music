@@ -28,11 +28,16 @@ weather (optional) ────────────────────�
 Weather is an optional second factor: the market drives the overall energy, the
 weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
 
-1. **Market engine** (`app/market_data.py`) polls SPY, QQQ, BTC, ETH and the VIX
-   every ~45s via Yahoo Finance (free, no key) and derives bounded signals:
-   intraday % change, 5-min / 1-hour momentum, gap from prior close, realized
-   volatility, trend, and three aggregates — **risk-on score**, **volatility
-   shock**, **dispersion** — plus an intraday **reversal** detector.
+1. **Market engine** (`app/market_data.py`) polls the basket every ~45s and
+   derives bounded signals: intraday % change, 5-min / 1-hour momentum, gap from
+   prior close, realized volatility, trend, and three aggregates — **risk-on
+   score**, **volatility shock**, **dispersion** — plus an intraday **reversal**
+   detector. Two pluggable providers behind one interface:
+   - **yfinance** (default, free, ~15-min delayed): SPY, QQQ, BTC, ETH, VIX.
+   - **polygon** (`MARKET_DATA_PROVIDER=polygon` + key): **real-time stocks**
+     (SPY, QQQ) and **futures** (ES, NQ, BTC, ETH front-month) — futures keep the
+     app live overnight/weekends. VIX comes from yfinance (Polygon doesn't serve
+     it), and any symbol Polygon can't fetch falls back to yfinance per-asset.
 2. **Emotion classifier** (`app/emotion_engine.py`) maps those signals to one of
    ten emotions with **transparent, deterministic rules** (no ML). Returns the
    emotion, a confidence, a human summary, and the inputs.
@@ -83,7 +88,9 @@ Copy `.env.example` to `.env`. Key settings:
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | From the [Spotify dashboard](https://developer.spotify.com/dashboard). Required for playlists. |
 | `SPOTIFY_REDIRECT_URI` | Must **exactly** match a Redirect URI on your Spotify app. Default `http://127.0.0.1:8000/auth/callback`. |
 | `DEEPSEEK_API_KEY` | Optional. From [platform.deepseek.com](https://platform.deepseek.com). |
-| `TRACKED_ASSETS` | Comma-separated tickers (default `SPY,QQQ,BTC-USD,ETH-USD,^VIX`). |
+| `MARKET_DATA_PROVIDER` | `yfinance` (default) or `polygon` (real-time stocks + futures). |
+| `POLYGON_API_KEY` | Polygon key; required for `polygon` mode. Stocks + futures entitlements. |
+| `TRACKED_ASSETS` | Comma-separated tickers for yfinance mode (default `SPY,QQQ,BTC-USD,ETH-USD,^VIX`). |
 | `POLL_INTERVAL_SECONDS` | Market poll cadence (default `45`). |
 | `WEATHER_LOCATION` | Optional preset city/ZIP for the weather factor (also settable in the UI). |
 | `PLAYLIST_NAME` / `PLAYLIST_SIZE` | The managed playlist's name and length. |
