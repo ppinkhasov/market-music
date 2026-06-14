@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en" data-emotion="calm">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>market-music · live market mood</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg-glow" id="bgGlow"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎵</span>
+      <div>
+        <h1>market&#8209;music</h1>
+        <p class="tagline">live markets, scored as music</p>
+      </div>
+    </div>
+    <div class="auth" id="authArea">
+      {% if logged_in %}
+        <span class="chip ok">Spotify: {{ display_name }}</span>
+        <button class="btn ghost" id="logoutBtn">Log out</button>
+      {% elif spotify_configured %}
+        <a class="btn spotify" href="/auth/login">Connect Spotify</a>
+      {% else %}
+        <span class="chip warn" title="Set SPOTIFY_CLIENT_ID / SECRET in .env">Spotify not configured</span>
+      {% endif %}
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero: current market emotion -->
+    <section class="hero card" id="hero">
+      <div class="hero-emotion">
+        <div class="emoji" id="emoji">·</div>
+        <div class="emotion-meta">
+          <div class="emotion-name" id="emotionName">connecting…</div>
+          <div class="confidence">
+            <span id="confidenceLabel">confidence</span>
+            <div class="conf-bar"><div class="conf-fill" id="confFill"></div></div>
+          </div>
+        </div>
+      </div>
+      <p class="summary" id="summary">Reading the market…</p>
+      <p class="narrative" id="narrative"></p>
+      <div class="meta-row">
+        <span class="muted" id="updatedAt">—</span>
+        <span class="muted" id="planSource"></span>
+      </div>
+    </section>
+
+    <!-- Aggregate signal gauges -->
+    <section class="gauges">
+      <div class="gauge card">
+        <div class="gauge-label">Risk&nbsp;sentiment</div>
+        <div class="meter bidir"><div class="meter-mid"></div><div class="meter-fill" id="riskFill"></div></div>
+        <div class="gauge-val" id="riskVal">—</div>
+        <div class="gauge-ends"><span>risk&#8209;off</span><span>risk&#8209;on</span></div>
+      </div>
+      <div class="gauge card">
+        <div class="gauge-label">Volatility&nbsp;shock</div>
+        <div class="meter"><div class="meter-fill warn" id="volFill"></div></div>
+        <div class="gauge-val" id="volVal">—</div>
+        <div class="gauge-ends"><span>calm</span><span>shock</span></div>
+      </div>
+      <div class="gauge card">
+        <div class="gauge-label">Dispersion</div>
+        <div class="meter"><div class="meter-fill" id="dispFill"></div></div>
+        <div class="gauge-val" id="dispVal">—</div>
+        <div class="gauge-ends"><span>aligned</span><span>chaotic</span></div>
+      </div>
+      <div class="gauge card">
+        <div class="gauge-label">Reversal</div>
+        <div class="meter bidir"><div class="meter-mid"></div><div class="meter-fill" id="revFill"></div></div>
+        <div class="gauge-val" id="revVal">—</div>
+        <div class="gauge-ends"><span>down</span><span>up</span></div>
+      </div>
+    </section>
+
+    <div class="columns">
+      <!-- Assets -->
+      <section class="card assets">
+        <h2>Tracked assets</h2>
+        <div class="asset-grid" id="assetGrid"></div>
+      </section>
+
+      <!-- Spotify panel -->
+      <section class="card spotify-panel">
+        <h2>Playlist</h2>
+        <div id="spotifyControls" class="controls">
+          <!-- filled by JS depending on login state -->
+        </div>
+        <div class="playlist" id="playlist"></div>
+      </section>
+    </div>
+
+    <section class="card history">
+      <h2>Mood history</h2>
+      <div class="timeline" id="timeline"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footStatus">polling every {{ poll_interval }}s</span>
+    <span class="muted">· data: Yahoo Finance (delayed) · mood: rules{% if deepseek_configured %} + DeepSeek{% endif %}</span>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+  <script>window.__POLL_INTERVAL__ = {{ poll_interval }};</script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
