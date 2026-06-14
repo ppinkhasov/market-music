@@ -262,12 +262,55 @@
     catch (e) { toast(e.message, true); }
   }
 
+  // --- weather -------------------------------------------------------------
+  function renderWeather(weather) {
+    const now = $("weatherNow");
+    const clearBtn = $("clearLocBtn");
+    now.innerHTML = "";
+    if (!weather) {
+      now.appendChild(makeEl("span", "muted",
+        "Add your location to fold local weather into the mood."));
+      if (clearBtn) clearBtn.hidden = true;
+      return;
+    }
+    const temp = (weather.temp_f != null) ? `${Math.round(weather.temp_f)}°F` : "";
+    const txt = makeEl("div");
+    txt.appendChild(makeEl("div", "w-main", weather.condition + (temp ? " · " + temp : "")));
+    txt.appendChild(makeEl("div", "w-sub", weather.location_name));
+    txt.appendChild(makeEl("div", "w-factor",
+      weather.is_precip ? "tinting the mood cozier" : "factored into the mood"));
+    now.appendChild(makeEl("span", "w-emoji", weather.emoji || "🌡️"));
+    now.appendChild(txt);
+    if (clearBtn) clearBtn.hidden = false;
+    // Prefill the input once, but never clobber what the user is typing.
+    const input = $("locationInput");
+    if (input && document.activeElement !== input && !input.value) {
+      input.value = weather.query || "";
+    }
+  }
+
+  async function submitLocation(query) {
+    const btn = $("setLocBtn");
+    btn.disabled = true; const label = btn.textContent; btn.textContent = "…";
+    try {
+      const data = await api("/api/location", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      renderWeather(data.weather);
+      toast(`Weather set: ${data.weather.condition} in ${data.weather.location_name}`);
+      tick();
+    } catch (e) { toast(e.message, true); }
+    finally { btn.disabled = false; btn.textContent = label; }
+  }
+
   // --- poll loop -----------------------------------------------------------
   async function tick() {
     try {
       const s = await api("/api/state");
       renderEmotion(s.emotion, s.music_plan, s.updated_at);
       renderSnapshot(s.snapshot);
+      renderWeather(s.weather);
       renderHistory(s.history);
 
       const session = s.session || {};
@@ -289,6 +332,26 @@
   // wire up static logout button (rendered server-side)
   const lo = $("logoutBtn");
   if (lo) lo.addEventListener("click", logout);
+
+  // wire up the weather/location form
+  const wForm = $("weatherForm");
+  if (wForm) wForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = $("locationInput").value.trim();
+    if (q) submitLocation(q);
+  });
+  const clearLoc = $("clearLocBtn");
+  if (clearLoc) clearLoc.addEventListener("click", async () => {
+    clearLoc.disabled = true;  // guard against rapid double-clicks
+    try {
+      await api("/api/location/clear", { method: "POST" });
+      $("locationInput").value = "";
+      renderWeather(null);
+      toast("Location cleared.");
+      tick();
+    } catch (e) { toast(e.message, true); }
+    finally { clearLoc.disabled = false; }
+  });
 
   // handle ?auth=ok / ?auth_error
   const params = new URLSearchParams(location.search);

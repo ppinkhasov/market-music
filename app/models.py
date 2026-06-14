@@ -85,6 +85,33 @@ class EmotionResult:
 
 
 @dataclass
+class Weather:
+    """Current local weather for the listener's location (optional factor)."""
+
+    query: str                  # what the user typed (city or zip)
+    location_name: str          # resolved, human-readable place name
+    latitude: float
+    longitude: float
+    code: int                   # WMO weather code
+    condition: str              # short label, e.g. "Rain"
+    emoji: str
+    is_precip: bool             # raining/snowing/storming
+    temp_f: Optional[float] = None
+    precipitation: Optional[float] = None   # mm
+    wind_mph: Optional[float] = None
+    fetched_at: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["temp_f"] = _round(self.temp_f, 1)
+        d["precipitation"] = _round(self.precipitation, 2)
+        d["wind_mph"] = _round(self.wind_mph, 1)
+        d["latitude"] = _round(self.latitude, 4)
+        d["longitude"] = _round(self.longitude, 4)
+        return d
+
+
+@dataclass
 class MusicPlan:
     """How the current emotion should be turned into music."""
 

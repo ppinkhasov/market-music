@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import spotify_client
+from . import spotify_client, weather as weather_mod
 from .config import settings
 from .state import UserSession, engine
 
@@ -97,6 +97,7 @@ async def state(request: Request):
         "snapshot": s.snapshot.to_dict() if s.snapshot else None,
         "emotion": s.emotion.to_dict() if s.emotion else None,
         "music_plan": s.music_plan.to_dict() if s.music_plan else None,
+        "weather": s.weather.to_dict() if s.weather else None,
         "history": s.history,
         "session": {
             "logged_in": bool(session and session.logged_in),
@@ -108,6 +109,36 @@ async def state(request: Request):
         },
     }
     return JSONResponse(body)
+
+
+# --- Weather / location ---------------------------------------------------
+
+@app.post("/api/location")
+async def set_location(request: Request):
+    """Set the listener's location (city or ZIP) so weather factors into the
+    music. Global for this single-user MVP; no Spotify login required."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    query = (payload.get("query") or "").strip()
+    if not query:
+        return JSONResponse({"error": "Enter a city or ZIP code."}, status_code=400)
+    try:
+        w = await engine.set_location(query)
+    except weather_mod.WeatherError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        log.exception("set_location failed")
+        return JSONResponse({"error": "Weather lookup failed, please try again."}, status_code=502)
+    return {"ok": True, "weather": w.to_dict(),
+            "music_plan": engine.state.music_plan.to_dict() if engine.state.music_plan else None}
+
+
+@app.post("/api/location/clear")
+async def clear_location():
+    await engine.clear_location()
+    return {"ok": True}
 
 
 # --- Spotify OAuth --------------------------------------------------------

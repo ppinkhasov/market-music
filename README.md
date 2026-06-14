@@ -3,9 +3,10 @@
 **A Spotify app that turns live market conditions into music.**
 
 market-music watches the stock & crypto markets in near-real-time, classifies the
-current *market emotion* (euphoric, fearful, chaotic, calm, …), uses DeepSeek to
-interpret that mood as music, and builds/updates a Spotify playlist to match the
-regime — optionally starting playback on an active device.
+current *market emotion* (euphoric, fearful, chaotic, calm, …), optionally blends
+in your local weather, uses DeepSeek to interpret that mood as music, and
+builds/updates a Spotify playlist to match the regime — optionally starting
+playback on an active device.
 
 > This is a modern rewrite of the original Raspberry-Pi-bound `market-music`
 > concept. The legacy scripts are preserved under [`legacy/`](legacy/).
@@ -17,9 +18,15 @@ regime — optionally starting playback on an active device.
 ## How it works
 
 ```
-yfinance ──► market engine ──► emotion classifier ──► DeepSeek ──► Spotify search ──► playlist
- (prices)     (signals)         (deterministic rules)   (mood→queries)   (tracks)        (+ playback)
+yfinance ──► market engine ──► emotion classifier ─┐
+ (prices)     (signals)         (deterministic rules)│
+                                                     ├─► DeepSeek ──► Spotify search ──► playlist
+weather (optional) ──────────────────────────────────┘  (mood→queries)   (tracks)       (+ playback)
+ (city/ZIP → conditions)
 ```
+
+Weather is an optional second factor: the market drives the overall energy, the
+weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
 
 1. **Market engine** (`app/market_data.py`) polls SPY, QQQ, BTC, ETH and the VIX
    every ~45s via Yahoo Finance (free, no key) and derives bounded signals:
@@ -29,10 +36,16 @@ yfinance ──► market engine ──► emotion classifier ──► DeepSeek
 2. **Emotion classifier** (`app/emotion_engine.py`) maps those signals to one of
    ten emotions with **transparent, deterministic rules** (no ML). Returns the
    emotion, a confidence, a human summary, and the inputs.
-3. **DeepSeek** (`app/deepseek_client.py`) interprets the mood and proposes
-   Spotify search queries + a narrative. *Optional* — if no key is set (or the
-   call fails) the app falls back to a built-in per-emotion music mapping.
-4. **Spotify** (`app/spotify_client.py`) — OAuth login, then builds the playlist
+3. **Weather** (`app/weather.py`, *optional*) — enter a city or ZIP and the app
+   pulls current conditions (Open-Meteo + zippopotam, both key-free). Weather is
+   fed in as a secondary mood factor: rain/snow/overcast over a calm or sideways
+   market nudges toward cozy, low-energy, lo-fi music; clear skies brighten it.
+   It never overrides a strong market signal.
+4. **DeepSeek** (`app/deepseek_client.py`) interprets the combined mood (market +
+   weather) and proposes Spotify search queries + a narrative. *Optional* — if no
+   key is set (or the call fails) the app falls back to a built-in per-emotion
+   music mapping, which is itself weather-aware.
+5. **Spotify** (`app/spotify_client.py`) — OAuth login, then builds the playlist
    from **Search** results (the deprecated Recommendations/Audio-Features
    endpoints are intentionally not used), and can start playback on a device.
 
@@ -72,6 +85,7 @@ Copy `.env.example` to `.env`. Key settings:
 | `DEEPSEEK_API_KEY` | Optional. From [platform.deepseek.com](https://platform.deepseek.com). |
 | `TRACKED_ASSETS` | Comma-separated tickers (default `SPY,QQQ,BTC-USD,ETH-USD,^VIX`). |
 | `POLL_INTERVAL_SECONDS` | Market poll cadence (default `45`). |
+| `WEATHER_LOCATION` | Optional preset city/ZIP for the weather factor (also settable in the UI). |
 | `PLAYLIST_NAME` / `PLAYLIST_SIZE` | The managed playlist's name and length. |
 
 ### Spotify app setup
@@ -90,6 +104,7 @@ Copy `.env.example` to `.env`. Key settings:
 | `GET /api/state` | Full live state: snapshot, emotion, music plan, session, history |
 | `GET /api/health` | Liveness + poll count |
 | `GET /auth/login` → `GET /auth/callback` | Spotify OAuth |
+| `POST /api/location` | Set the weather location (`{"query": "Seattle"}` or a ZIP); clear with `POST /api/location/clear` |
 | `POST /api/playlist/sync` | Build/refresh the managed playlist to the current mood |
 | `POST /api/play` | Start playback (`{"device_id": "..."}`, optional) |
 | `GET /api/devices` | List the user's Spotify devices |
@@ -136,6 +151,7 @@ app/
   market_data.py     # provider interface + yfinance engine + signals
   emotion_engine.py  # deterministic emotion classifier
   deepseek_client.py # DeepSeek (OpenAI-compatible) mood interpreter
+  weather.py         # optional local-weather mood factor (key-free APIs)
   music.py           # emotion→music mapping + playlist assembly via search
   spotify_client.py  # OAuth + Web API client
   state.py           # sessions, app state, background poller

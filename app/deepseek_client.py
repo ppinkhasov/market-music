@@ -17,15 +17,16 @@ from typing import List, Optional
 import httpx
 
 from .config import settings
-from .models import EmotionResult, MarketSnapshot, MusicPlan
+from .models import EmotionResult, MarketSnapshot, MusicPlan, Weather
 
 _SYSTEM_PROMPT = """You are a music director for an app that turns live financial-market \
 conditions into a Spotify playlist. You are given the market's current "emotion" \
-(already classified) and the underlying signals. Translate that mood into music.
+(already classified) and the underlying signals, and sometimes the listener's local \
+weather. Translate that combined mood into music.
 
 Respond with ONLY a JSON object, no prose, with exactly these keys:
 {
-  "narrative": "1-2 vivid sentences describing the market mood and the music that fits it",
+  "narrative": "1-2 vivid sentences describing the mood and the music that fits it",
   "search_queries": ["6-10 Spotify search queries that will surface matching tracks"],
   "seed_genres": ["3-6 genre words"],
   "target_energy": 0.0-1.0,
@@ -36,10 +37,19 @@ Guidelines for search_queries: each should be 2-4 words combining a genre/mood/e
 that a human would type into Spotify (e.g. "euphoric festival house", "melancholic \
 piano", "aggressive thrash metal", "calm lo-fi beats"). Make them musically diverse \
 but coherent with the emotion. target_energy is sonic intensity; target_valence is \
-musical positivity (happy=high, sad=low)."""
+musical positivity (happy=high, sad=low).
+
+If weather is provided, treat it as a secondary modifier of the market mood — the \
+market drives the overall energy, the weather tints the texture. For example: rain, \
+snow, fog or overcast skies over a calm/sideways/mildly-positive market call for \
+cozier, lower-energy, lo-fi / chill / rainy-day music; clear, sunny skies brighten \
+and lift the selection; a storm can add edge or drama. Never let mild weather \
+override a strong market signal (a violent selloff stays intense even in sunshine), \
+and weave the weather into the narrative when it meaningfully shifts the vibe."""
 
 
-def _build_user_payload(emotion: EmotionResult, snapshot: MarketSnapshot) -> str:
+def _build_user_payload(emotion: EmotionResult, snapshot: MarketSnapshot,
+                        weather: Optional[Weather] = None) -> str:
     movers = {}
     for sym, a in snapshot.assets.items():
         movers[sym] = {
@@ -58,6 +68,14 @@ def _build_user_payload(emotion: EmotionResult, snapshot: MarketSnapshot) -> str
         },
         "assets": movers,
     }
+    if weather is not None:
+        payload["weather"] = {
+            "location": weather.location_name,
+            "condition": weather.condition,
+            "is_precipitating": weather.is_precip,
+            "temperature_f": weather.temp_f,
+            "wind_mph": weather.wind_mph,
+        }
     return json.dumps(payload)
 
 
@@ -92,9 +110,11 @@ def _coerce_plan(emotion: str, data: dict) -> Optional[MusicPlan]:
         return None
 
 
-async def interpret(emotion: EmotionResult, snapshot: MarketSnapshot) -> Optional[MusicPlan]:
-    """Ask DeepSeek to turn the market emotion into a music plan. Returns None on
-    any failure so the caller can fall back to the deterministic mapping."""
+async def interpret(emotion: EmotionResult, snapshot: MarketSnapshot,
+                    weather: Optional[Weather] = None) -> Optional[MusicPlan]:
+    """Ask DeepSeek to turn the market emotion (and optional weather) into a
+    music plan. Returns None on any failure so the caller can fall back to the
+    deterministic mapping."""
     if not settings.deepseek_configured:
         return None
 
@@ -103,7 +123,7 @@ async def interpret(emotion: EmotionResult, snapshot: MarketSnapshot) -> Optiona
         "model": settings.deepseek_model,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_payload(emotion, snapshot)},
+            {"role": "user", "content": _build_user_payload(emotion, snapshot, weather)},
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.8,
