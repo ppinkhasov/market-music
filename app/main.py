@@ -12,7 +12,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import spotify_client, weather as weather_mod
+import asyncio
+import re
+
+from . import config, market_data, spotify_client, weather as weather_mod
 from .config import settings
 from .state import UserSession, engine
 
@@ -144,6 +147,55 @@ async def set_location(request: Request):
 async def clear_location():
     await engine.clear_location()
     return {"ok": True}
+
+
+# --- Market data source (Polygon key) -------------------------------------
+
+@app.post("/api/config/polygon")
+async def set_polygon_key(request: Request):
+    """Save a Polygon API key to the local .env and switch to real-time mode."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    key = (payload.get("api_key") or "").strip()
+    if not key:
+        return JSONResponse({"error": "Enter a Polygon API key."}, status_code=400)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", key):
+        return JSONResponse({"error": "That doesn't look like a Polygon API key."}, status_code=400)
+    ok, msg = await asyncio.to_thread(market_data.validate_polygon_key, key)
+    if not ok:
+        return JSONResponse({"error": msg}, status_code=400)
+    # Apply live + persist so it survives a restart.
+    settings.polygon_api_key = key
+    settings.market_data_provider = "polygon"
+    market_data.reset_polygon()
+    try:
+        config.update_env({"POLYGON_API_KEY": key, "MARKET_DATA_PROVIDER": "polygon"})
+    except Exception:
+        log.exception("failed to persist polygon key to .env")
+        return JSONResponse({"error": "Saved live, but couldn't write .env."}, status_code=500)
+    return {"ok": True, "provider": "polygon"}
+
+
+@app.post("/api/config/provider")
+async def set_provider(request: Request):
+    """Switch the active market-data provider (yfinance | polygon)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    provider = (payload.get("provider") or "").strip()
+    if provider not in ("yfinance", "polygon"):
+        return JSONResponse({"error": "Provider must be 'yfinance' or 'polygon'."}, status_code=400)
+    if provider == "polygon" and not settings.polygon_configured:
+        return JSONResponse({"error": "No Polygon key set yet."}, status_code=400)
+    settings.market_data_provider = provider
+    try:
+        config.update_env({"MARKET_DATA_PROVIDER": provider})
+    except Exception:
+        log.exception("failed to persist provider to .env")
+    return {"ok": True, "provider": provider}
 
 
 # --- Spotify OAuth --------------------------------------------------------

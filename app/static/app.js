@@ -314,6 +314,52 @@
     }
   }
 
+  function renderDataSource(cfg) {
+    const now = $("dataNow");
+    if (!now) return;
+    const isPoly = cfg.market_data_provider === "polygon" && cfg.polygon_configured;
+    now.innerHTML = "";
+    now.appendChild(makeEl("span", null, "Market data: "));
+    if (isPoly) {
+      now.appendChild(makeEl("b", "src-badge src-polygon", "POLYGON"));
+      now.appendChild(makeEl("span", "muted", " real-time stocks + futures"));
+    } else {
+      now.appendChild(makeEl("b", null, "yfinance"));
+      now.appendChild(makeEl("span", "muted", " · ~15-min delayed. Add a Polygon key for real-time futures →"));
+    }
+    // Show the key form for yfinance; a revert button when already on Polygon.
+    const focused = document.activeElement === $("polygonKey");
+    if (!focused) {
+      $("polygonKey").style.display = isPoly ? "none" : "";
+      $("polygonBtn").style.display = isPoly ? "none" : "";
+      $("revertProviderBtn").hidden = !isPoly;
+    }
+  }
+
+  async function submitPolygonKey() {
+    const key = $("polygonKey").value.trim();
+    if (!key) return;
+    const btn = $("polygonBtn");
+    btn.disabled = true; const lbl = btn.textContent; btn.textContent = "Checking…";
+    try {
+      await api("/api/config/polygon", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ api_key: key }) });
+      $("polygonKey").value = "";
+      toast("Real-time Polygon data enabled 🛰️");
+      tick();
+    } catch (e) { toast(e.message, true); }
+    finally { btn.disabled = false; btn.textContent = lbl; }
+  }
+
+  async function switchProvider(provider) {
+    try {
+      await api("/api/config/provider", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ provider }) });
+      toast(`Switched market data to ${provider}.`);
+      tick();
+    } catch (e) { toast(e.message, true); }
+  }
+
   async function submitLocation(query) {
     const btn = $("setLocBtn");
     btn.disabled = true; const label = btn.textContent; btn.textContent = "…";
@@ -335,8 +381,10 @@
       const s = await api("/api/state");
       if (s.auto_sync_interval) autoSyncInterval = s.auto_sync_interval;
       renderEmotion(s.emotion, s.music_plan, s.updated_at, s.time_ctx);
+      if (window.Scene) window.Scene.update(s);
       renderSnapshot(s.snapshot);
       renderWeather(s.weather);
+      renderDataSource(s.config || {});
       renderHistory(s.history);
 
       const session = s.session || {};
@@ -372,6 +420,12 @@
     const q = $("locationInput").value.trim();
     if (q) submitLocation(q);
   });
+  // wire up the Polygon data-source form
+  const pForm = $("polygonForm");
+  if (pForm) pForm.addEventListener("submit", (e) => { e.preventDefault(); submitPolygonKey(); });
+  const revertBtn = $("revertProviderBtn");
+  if (revertBtn) revertBtn.addEventListener("click", () => switchProvider("yfinance"));
+
   const clearLoc = $("clearLocBtn");
   if (clearLoc) clearLoc.addEventListener("click", async () => {
     clearLoc.disabled = true;  // guard against rapid double-clicks

@@ -67,7 +67,12 @@ weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
    with Spotify's built-in Crossfade (Settings → Playback) for true audio overlap.
 
 The web UI (`app/templates`, `app/static`) is an emotion-reactive dashboard that
-polls `/api/state` and recolors itself to the current mood.
+polls `/api/state` and recolors itself to the current mood. The background is a
+generative canvas sky (`app/static/scene.js`) that shifts with the time of day
+and weather, with motion that pulses to the current energy — an ambient
+"visualizer" (Spotify's DRM stream can't be sampled for real audio FFT). The
+market-data source can also be switched to real-time Polygon by pasting a key
+right in the UI (saved to `.env`).
 
 ## Quick start
 
@@ -174,7 +179,8 @@ app/
   music.py           # emotion→music mapping + playlist assembly via search
   spotify_client.py  # OAuth + Web API client
   state.py           # sessions, app state, background poller
-  main.py            # FastAPI routes + lifespan
-  templates/ static/ # web UI
+  daypart.py         # time-of-day energy ceiling
+  main.py            # FastAPI routes + lifespan (incl. /api/config/polygon)
+  templates/ static/ # web UI (static/scene.js = dynamic background)
 legacy/              # the original Raspberry Pi scripts
 ```

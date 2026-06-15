@@ -6,12 +6,52 @@ version (or none). Everything is plain env parsing with sensible defaults.
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import List
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
 load_dotenv()
+
+
+def update_env(updates: dict) -> None:
+    """Persist key=value pairs to the project .env, updating existing keys in
+    place and appending new ones (comments/other lines preserved)."""
+    lines = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
+    # Strip newlines from values so a value can never inject extra .env lines.
+    remaining = {str(k): str(v).replace("\n", "").replace("\r", "") for k, v in updates.items()}
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                out.append(f"{key}={remaining.pop(key)}")
+                continue
+        out.append(line)
+    for key, val in remaining.items():
+        out.append(f"{key}={val}")
+    content = "\n".join(out) + "\n"
+    # Atomic write: render to a temp file in the same dir, fsync, then os.replace
+    # so a crash/power-loss/disk-full mid-write can never truncate the real .env.
+    fd, tmp = tempfile.mkstemp(dir=str(ENV_PATH.parent), prefix=".env.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, ENV_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _split_csv(value: str) -> List[str]:

@@ -517,6 +517,36 @@ def _get_polygon() -> Optional[PolygonProvider]:
     return _polygon_provider
 
 
+def reset_polygon() -> None:
+    """Drop the cached Polygon provider so it's recreated with the current key.
+
+    We deliberately do NOT close the old client here: a poll may be mid-flight in
+    a worker thread still holding this provider, and closing the client under it
+    would error that poll. The orphaned client is closed by GC once the thread
+    releases it; the next poll builds a fresh provider with the new key.
+    """
+    global _polygon_provider
+    _polygon_provider = None
+
+
+def validate_polygon_key(key: str) -> Tuple[bool, str]:
+    """Quick liveness check of a Polygon key against the previous-close endpoint.
+    Blocking — call via asyncio.to_thread."""
+    try:
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get("https://api.polygon.io/v2/aggs/ticker/SPY/prev",
+                      headers={"Authorization": f"Bearer {key}"})
+    except Exception:
+        return False, "Couldn't reach Polygon to validate the key."
+    if r.status_code == 200:
+        return True, "ok"
+    if r.status_code in (401, 403):
+        return False, "Polygon rejected that key (unauthorized)."
+    if r.status_code == 429:
+        return True, "ok (rate-limited, but the key is valid)"
+    return False, f"Polygon returned HTTP {r.status_code}."
+
+
 def fetch_snapshot(specs: Optional[List[AssetSpec]] = None) -> MarketSnapshot:
     """Fetch and assemble a full market snapshot. Blocking (run in a thread)."""
     if specs is None:
