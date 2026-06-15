@@ -46,17 +46,32 @@ def _direction_word(score: float) -> str:
 
 
 def _movers(snapshot: MarketSnapshot) -> str:
-    """Compact textual description of the notable movers."""
+    """Compact description of the notable LIVE movers (skips stale/closed assets;
+    works for both the yfinance and Polygon baskets)."""
     bits: List[str] = []
-    for sym in ("SPY", "QQQ", "BTC-USD", "ETH-USD"):
-        a = snapshot.assets.get(sym)
-        if a and a.change_pct is not None:
-            label = {"SPY": "SPY", "QQQ": "QQQ", "BTC-USD": "BTC", "ETH-USD": "ETH"}[sym]
-            bits.append(f"{label} {a.change_pct:+.2f}%")
-    vix = snapshot.assets.get("^VIX")
-    if vix and vix.change_pct is not None:
-        bits.append(f"VIX {vix.change_pct:+.1f}%")
-    return ", ".join(bits)
+    vix_bit = ""
+    for sym, a in snapshot.assets.items():
+        if a.stale or a.change_pct is None:
+            continue
+        label = sym.replace("-USD", "").replace("^", "")
+        if a.kind == "index":          # the VIX-style vol gauge -> show last
+            vix_bit = f"{label} {a.change_pct:+.1f}%"
+            continue
+        bits.append(f"{label} {a.change_pct:+.2f}%")
+    if vix_bit:
+        bits.append(vix_bit)
+    return ", ".join(bits[:6])
+
+
+def _closed_note(snapshot: MarketSnapshot) -> str:
+    """Note when cash markets are closed but futures/crypto still trade."""
+    cash_stale = any(a.stale for a in snapshot.assets.values()
+                     if a.kind in ("etf", "stock"))
+    live_offhours = any((not a.stale) for a in snapshot.assets.values()
+                        if a.kind in ("future", "crypto"))
+    if cash_stale and live_offhours:
+        return " Cash equities are closed — reading index futures and crypto."
+    return ""
 
 
 def classify(snapshot: MarketSnapshot) -> EmotionResult:
@@ -88,6 +103,7 @@ def classify(snapshot: MarketSnapshot) -> EmotionResult:
     summary = f"Market reads {emotion} — {descriptor}. {reason}"
     if movers:
         summary += f" ({movers})."
+    summary += _closed_note(snapshot)
 
     return EmotionResult(
         emotion=emotion,

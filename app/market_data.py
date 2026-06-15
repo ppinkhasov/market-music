@@ -58,6 +58,7 @@ class RawSeries:
     daily: List[float] = field(default_factory=list)       # daily closes, oldest->newest
     today_open: Optional[float] = None
     market_open: bool = False
+    last_ts: Optional[float] = None    # epoch seconds of the latest intraday bar
     source_label: str = ""
     error: Optional[str] = None
 
@@ -112,6 +113,32 @@ def _pct(curr: Optional[float], base: Optional[float]) -> Optional[float]:
     return (curr / base - 1.0) * 100.0
 
 
+def _epoch_seconds(v) -> Optional[float]:
+    """Normalize a timestamp (s/ms/us/ns) to epoch seconds."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    if v > 1e17:      # nanoseconds
+        return v / 1e9
+    if v > 1e14:      # microseconds
+        return v / 1e6
+    if v > 1e11:      # milliseconds
+        return v / 1e3
+    return v          # seconds
+
+
+def _series_is_stale(raw: "Optional[RawSeries]") -> bool:
+    """True if a raw series has no intraday data or its latest bar is too old."""
+    if raw is None or not raw.intraday:
+        return True
+    if raw.last_ts is None:
+        return False  # has intraday but no timestamp -> assume live
+    return (time.time() - raw.last_ts) > settings.stale_after_seconds
+
+
 def _trend(change_pct: Optional[float]) -> str:
     if change_pct is None:
         return "flat"
@@ -156,6 +183,15 @@ def _metrics_from_series(spec: AssetSpec, raw: RawSeries) -> AssetMetrics:
     m.price = price
     m.prev_close = prev_close
     m.market_open = raw.market_open and bool(intraday)
+    # Staleness: an asset whose latest bar is old is "closed" (e.g. cash equities
+    # over the weekend while index futures still trade). Excluded from the mood.
+    if not intraday:
+        m.stale = True
+    elif raw.last_ts is not None:
+        m.data_age_seconds = time.time() - raw.last_ts
+        m.stale = m.data_age_seconds > settings.stale_after_seconds
+    else:
+        m.stale = False  # has intraday but no usable timestamp -> assume live
     m.change_pct = _pct(price, prev_close)
     m.gap_pct = _pct(raw.today_open, prev_close)
 
@@ -248,8 +284,14 @@ class YFinanceProvider(MarketDataProvider):
         daily = self._slice(daily_df, sid)
         raw = RawSeries(source_label="yfinance")
         if intraday is not None and "Close" in intraday:
-            raw.intraday = [float(x) for x in intraday["Close"].dropna().tolist()]
+            closes = intraday["Close"].dropna()
+            raw.intraday = [float(x) for x in closes.tolist()]
             raw.market_open = bool(raw.intraday)
+            if len(closes):
+                try:  # last bar's timestamp -> epoch seconds (index is tz-aware)
+                    raw.last_ts = float(pd.Timestamp(closes.index[-1]).timestamp())
+                except Exception:
+                    pass
         if daily is not None and "Close" in daily:
             raw.daily = [float(x) for x in daily["Close"].dropna().tolist()]
             if "Open" in daily:
@@ -328,6 +370,8 @@ class PolygonProvider(MarketDataProvider):
         bars = j.get("results") or []
         raw.intraday = [float(b["c"]) for b in bars if b.get("c") is not None]
         raw.market_open = bool(raw.intraday)
+        if bars and bars[-1].get("t") is not None:
+            raw.last_ts = _epoch_seconds(bars[-1]["t"])  # ms epoch
 
         jd = self._get(f"{self.STOCK_BASE}/v2/aggs/ticker/{ticker}/range/1/day/{frm_day}/{to}",
                        {"adjusted": "true", "sort": "asc", "limit": 60})
@@ -374,6 +418,8 @@ class PolygonProvider(MarketDataProvider):
         bars = j.get("results") or []
         raw.intraday = [float(b["close"]) for b in bars if b.get("close") is not None]
         raw.market_open = bool(raw.intraday)
+        if bars and bars[-1].get("window_start") is not None:
+            raw.last_ts = _epoch_seconds(bars[-1]["window_start"])
 
         jd = self._get(f"{self.FUT_BASE}/futures/v1/aggs/{ticker}",
                        {"resolution": "1session", "window_start.gte": frm_day,
@@ -395,9 +441,12 @@ def _aggregate(specs: List[AssetSpec], assets: Dict[str, AssetMetrics],
     risk_changes: List[float] = []
     vix_change: Optional[float] = None
 
+    # Only live assets drive the mood; stale (closed-market) assets are skipped,
+    # so e.g. on a weekend the read comes from index futures + crypto, not from
+    # Friday's frozen cash-equity prints.
     for sym, a in assets.items():
         spec = spec_by_symbol.get(sym)
-        if not spec or a.change_pct is None:
+        if not spec or a.change_pct is None or a.stale:
             continue
         if spec.klass == "vol":
             vix_change = a.change_pct
@@ -415,18 +464,19 @@ def _aggregate(specs: List[AssetSpec], assets: Dict[str, AssetMetrics],
     # Volatility shock: VIX level/change, equity gaps, fast short-window moves.
     vol_shock = 0.0
     vix = next((a for s, a in assets.items()
-                if spec_by_symbol.get(s) and spec_by_symbol[s].klass == "vol"), None)
+                if spec_by_symbol.get(s) and spec_by_symbol[s].klass == "vol"
+                and not a.stale), None)
     if vix and vix.price is not None:
         vol_shock = max(vol_shock, max(0.0, min(1.0, (vix.price - 15.0) / 30.0)))
     if vix_change is not None:
         vol_shock = max(vol_shock, max(0.0, math.tanh(vix_change / 20.0)))
     for sym, a in assets.items():
         spec = spec_by_symbol.get(sym)
-        if spec and spec.klass == "equity" and a.gap_pct is not None:
+        if spec and spec.klass == "equity" and not a.stale and a.gap_pct is not None:
             vol_shock = max(vol_shock, max(0.0, min(1.0, (abs(a.gap_pct) - 0.5) / 2.5)))
     fast = [abs(a.change_5m) for s, a in assets.items()
             if spec_by_symbol.get(s) and spec_by_symbol[s].klass != "vol"
-            and a.change_5m is not None]
+            and not a.stale and a.change_5m is not None]
     if fast:
         vol_shock = max(vol_shock, max(0.0, min(1.0, (max(fast) - 0.3) / 1.2)))
     vol_shock = max(0.0, min(1.0, vol_shock))
@@ -439,7 +489,8 @@ def _aggregate(specs: List[AssetSpec], assets: Dict[str, AssetMetrics],
 
     rev_vals = [_intraday_reversal(intraday_closes[s])
                 for s in intraday_closes
-                if spec_by_symbol.get(s) and spec_by_symbol[s].klass != "vol"]
+                if spec_by_symbol.get(s) and spec_by_symbol[s].klass != "vol"
+                and not assets[s].stale]
     rev_vals = [r for r in rev_vals if r is not None]
     reversal = sum(rev_vals) / len(rev_vals) if rev_vals else 0.0
 
@@ -489,15 +540,24 @@ def fetch_snapshot(specs: Optional[List[AssetSpec]] = None) -> MarketSnapshot:
 
     # Per-symbol fallback: any Polygon asset that errored or returned no price
     # is retried via yfinance using its yf_fallback id.
+    # Retry via yfinance when Polygon errored / returned nothing, or when a
+    # crypto asset is stale (CME crypto futures close on weekends, but yfinance
+    # crypto spot trades 24/7 — keeps a live crypto floor for the mood).
     failed = [s for s in poly_specs
               if s.yf_fallback and (raw.get(s.symbol) is None
                                     or raw[s.symbol].error
-                                    or (not raw[s.symbol].intraday and not raw[s.symbol].daily))]
+                                    or (not raw[s.symbol].intraday and not raw[s.symbol].daily)
+                                    or (s.klass == "crypto" and _series_is_stale(raw.get(s.symbol))))]
     if failed:
         fb = _yf_provider.fetch([_fallback_spec(s) for s in failed])
         for s in failed:
             r = fb.get(s.symbol)
-            if r and (r.intraday or r.daily):
+            if not r or not (r.intraday or r.daily):
+                continue
+            cur = raw.get(s.symbol)
+            # Use the fallback when Polygon had nothing usable, or it's fresher.
+            if (cur is None or cur.error or (not cur.intraday and not cur.daily)
+                    or (_series_is_stale(cur) and not _series_is_stale(r))):
                 raw[s.symbol] = r
 
     # Build metrics + collect intraday close lists for reversal.

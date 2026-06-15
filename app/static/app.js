@@ -28,6 +28,7 @@
 
   let loggedIn = false;
   let autoSync = false;
+  let autoSyncInterval = 180;
   let lastEmotion = null;
 
   // --- helpers -------------------------------------------------------------
@@ -119,10 +120,10 @@
       let symText = a.symbol;
       if (a.kind && a.kind !== "stock") symText += " · " + a.kind;
       if (a.error) symText += " · error";
-      else if (!a.market_open) symText += " · closed (last session)";
+      else if (a.stale) symText += " · closed (not in mood)";
 
       const left = makeEl("div");
-      const nameRow = makeEl("div", "a-name", a.name);
+      const nameRow = makeEl("div", "a-name" + (a.stale ? " stale" : ""), a.name);
       if (a.source) {
         const badge = makeEl("span", "src-badge src-" + a.source, a.source);
         nameRow.appendChild(badge);
@@ -130,7 +131,7 @@
       left.appendChild(nameRow);
       left.appendChild(makeEl("div", "a-sym", symText));
 
-      const right = makeEl("div", "a-right");
+      const right = makeEl("div", "a-right" + (a.stale ? " stale" : ""));
       right.appendChild(makeEl("div", "a-chg " + dir, fmtPct(a.change_pct)));
       right.appendChild(makeEl("div", "a-price",
         (a.price != null) ? a.price.toLocaleString(undefined, {maximumFractionDigits: 2}) : "—"));
@@ -201,17 +202,23 @@
     // Logged in: only (re)build controls once.
     if (c.dataset.built === "1") return;
     c.dataset.built = "1";
+    const mins = Math.max(1, Math.round((autoSyncInterval || 180) / 60));
     c.innerHTML = `
       <div class="row">
         <button class="btn primary" id="syncBtn">⟳ Sync to mood</button>
         <button class="btn" id="playBtn">▶ Play</button>
         <select id="deviceSelect"><option value="">Active device</option></select>
       </div>
-      <label class="toggle"><input type="checkbox" id="autoSync"/> Auto-sync playlist when the mood changes</label>`;
+      <label class="toggle"><input type="checkbox" id="autoSync"/> Auto-sync playlist to the market every ${mins} min</label>
+      <label class="toggle"><input type="checkbox" id="djMode"/> 🎚️ DJ mode — fade volume between tracks (Spotify Premium)</label>
+      <div class="tip" id="crossfadeTip">💡 For true overlapping crossfade, also enable <b>Crossfade</b> in Spotify → Settings → Playback.</div>`;
 
+    $("autoSync").checked = !!session.auto_sync;
+    $("djMode").checked = !!session.dj_mode;
     $("syncBtn").addEventListener("click", doSync);
     $("playBtn").addEventListener("click", doPlay);
     $("autoSync").addEventListener("change", toggleAutoSync);
+    $("djMode").addEventListener("change", toggleDjMode);
     $("deviceSelect").addEventListener("focus", loadDevices);
     loadDevices();
   }
@@ -245,6 +252,17 @@
       const data = await api("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ auto_sync: on }) });
       toast(data.auto_sync ? "Auto-sync on — playlist follows the market." : "Auto-sync off.");
+    } catch (e) { ev.target.checked = !on; toast(e.message, true); }
+  }
+
+  async function toggleDjMode(ev) {
+    const on = ev.target.checked;
+    try {
+      const data = await api("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ dj_mode: on }) });
+      toast(data.dj_mode
+        ? "DJ mode on — fading volume between tracks (needs Premium + active playback)."
+        : "DJ mode off — volume restored.");
     } catch (e) { ev.target.checked = !on; toast(e.message, true); }
   }
 
@@ -314,6 +332,7 @@
   async function tick() {
     try {
       const s = await api("/api/state");
+      if (s.auto_sync_interval) autoSyncInterval = s.auto_sync_interval;
       renderEmotion(s.emotion, s.music_plan, s.updated_at);
       renderSnapshot(s.snapshot);
       renderWeather(s.weather);
@@ -324,9 +343,15 @@
       renderControls(session, s.config.spotify_configured);
       if (session.playlist) renderPlaylist(session.playlist);
 
-      // sync auto-sync checkbox state if present
+      // keep the toggles in sync with server state (unless being edited)
       const autoBox = $("autoSync");
-      if (autoBox && autoBox.checked !== session.auto_sync) autoBox.checked = session.auto_sync;
+      if (autoBox && document.activeElement !== autoBox && autoBox.checked !== session.auto_sync) {
+        autoBox.checked = session.auto_sync;
+      }
+      const djBox = $("djMode");
+      if (djBox && document.activeElement !== djBox && djBox.checked !== session.dj_mode) {
+        djBox.checked = session.dj_mode;
+      }
 
       if (s.last_error) $("footStatus").textContent = "⚠ " + s.last_error;
       else $("footStatus").textContent = `polling every ${window.__POLL_INTERVAL__}s · ${s.poll_count} polls`;

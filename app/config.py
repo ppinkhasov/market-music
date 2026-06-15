@@ -49,10 +49,24 @@ class Settings:
         default_factory=lambda: _split_csv(os.getenv("TRACKED_ASSETS", "")) or list(DEFAULT_ASSETS)
     )
     poll_interval_seconds: int = int(os.getenv("POLL_INTERVAL_SECONDS", "45"))
+    # An asset whose latest bar is older than this is treated as "closed" and
+    # excluded from the mood (e.g. stale cash equities while futures still trade).
+    # Generous enough not to flag delayed-but-live feeds (yfinance ~15 min).
+    stale_after_seconds: int = int(os.getenv("STALE_AFTER_SECONDS", "1800"))
 
     # --- Weather (optional mood factor) ---
     # Preset starting location (city or ZIP); can also be set live in the UI.
     weather_location: str = os.getenv("WEATHER_LOCATION", "")
+
+    # --- Auto-sync + DJ stream ---
+    # How often (seconds) the playlist re-syncs to the market while auto-sync is
+    # on, even if the emotion hasn't changed.
+    auto_sync_interval_seconds: int = int(os.getenv("AUTO_SYNC_INTERVAL_SECONDS", "180"))
+    # DJ mode: fade the device volume down/up around track boundaries for a
+    # continuous-stream feel. Tick is how often the fade loop checks playback.
+    dj_tick_seconds: float = float(os.getenv("DJ_TICK_SECONDS", "2"))
+    dj_fade_seconds: float = float(os.getenv("DJ_FADE_SECONDS", "6"))
+    dj_floor_volume: int = int(os.getenv("DJ_FLOOR_VOLUME", "20"))
 
     # --- Playlist ---
     playlist_name: str = os.getenv("PLAYLIST_NAME", "Market Music \U0001F3B6 Live Mood")

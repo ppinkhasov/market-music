@@ -140,6 +140,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 20px 60px; }
 .a-chg.down { color: var(--red); }
 .a-chg.flat { color: var(--muted); }
 .a-sub { font-size: 0.7rem; color: var(--muted); }
+.asset .stale, .a-name.stale { opacity: 0.45; }
 
 /* Spotify panel */
 .controls { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
@@ -161,6 +162,9 @@ select {
 }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted); cursor: pointer; }
 .toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+.tip { font-size: 0.76rem; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 12px; line-height: 1.45; }
+.tip b { color: var(--text); font-weight: 600; }
 
 .chip { font-size: 0.76rem; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--border); }
 .chip.ok { color: var(--spotify); border-color: color-mix(in srgb, var(--spotify) 40%, transparent); }

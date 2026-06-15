@@ -105,10 +105,12 @@ async def state(request: Request):
             "logged_in": bool(session and session.logged_in),
             "display_name": session.display_name if session else None,
             "auto_sync": session.auto_sync if session else False,
+            "dj_mode": session.dj_mode if session else False,
             "playlist": (session.last_playlist.to_dict()
                          if session and session.last_playlist else None),
             "synced_emotion": session.last_synced_emotion if session else None,
         },
+        "auto_sync_interval": settings.auto_sync_interval_seconds,
     }
     return JSONResponse(body)
 
@@ -228,10 +230,15 @@ async def update_settings(request: Request):
     session = _require_login(request)
     if not session:
         return JSONResponse({"error": "Not logged in to Spotify."}, status_code=401)
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
     if "auto_sync" in payload:
         session.auto_sync = bool(payload["auto_sync"])
-    return {"ok": True, "auto_sync": session.auto_sync}
+    if "dj_mode" in payload:
+        await engine.set_dj_mode(session, bool(payload["dj_mode"]))
+    return {"ok": True, "auto_sync": session.auto_sync, "dj_mode": session.dj_mode}
 
 
 @app.get("/api/devices")

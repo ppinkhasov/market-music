@@ -29,6 +29,8 @@ class AssetMetrics:
     realized_vol: Optional[float] = None       # annualized intraday realized vol (%)
     trend: str = "flat"                        # "up" | "down" | "flat"
     market_open: bool = False                  # had fresh intraday data this poll
+    stale: bool = False                        # latest bar too old -> market closed
+    data_age_seconds: Optional[float] = None   # age of the latest bar
     source: str = ""                           # "polygon" | "yfinance" (data provenance)
     kind: str = "equity"                        # "stock" | "future" | "etf" | "index"
     error: Optional[str] = None

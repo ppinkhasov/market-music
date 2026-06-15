@@ -38,6 +38,10 @@ weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
      (SPY, QQQ) and **futures** (ES, NQ, BTC, ETH front-month) — futures keep the
      app live overnight/weekends. VIX comes from yfinance (Polygon doesn't serve
      it), and any symbol Polygon can't fetch falls back to yfinance per-asset.
+
+   Assets whose latest bar is **stale** (a closed market) are flagged and
+   excluded from the mood — so when cash equities are shut, the read comes from
+   live index futures + crypto, not Friday's frozen prints (`STALE_AFTER_SECONDS`).
 2. **Emotion classifier** (`app/emotion_engine.py`) maps those signals to one of
    ten emotions with **transparent, deterministic rules** (no ML). Returns the
    emotion, a confidence, a human summary, and the inputs.
@@ -53,6 +57,10 @@ weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
 5. **Spotify** (`app/spotify_client.py`) — OAuth login, then builds the playlist
    from **Search** results (the deprecated Recommendations/Audio-Features
    endpoints are intentionally not used), and can start playback on a device.
+   With **auto-sync** on (default), the playlist re-syncs to the market every
+   ~3 min (and instantly on a regime change). **DJ mode** fades the device
+   volume down/up around track boundaries for a continuous-stream feel — pair it
+   with Spotify's built-in Crossfade (Settings → Playback) for true audio overlap.
 
 The web UI (`app/templates`, `app/static`) is an emotion-reactive dashboard that
 polls `/api/state` and recolors itself to the current mood.
