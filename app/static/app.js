@@ -66,7 +66,7 @@
   }
 
   // --- renderers -----------------------------------------------------------
-  function renderEmotion(emotion, plan, updatedAt) {
+  function renderEmotion(emotion, plan, updatedAt, timeCtx) {
     if (!emotion) return;
     const name = emotion.emotion;
     document.documentElement.setAttribute("data-emotion", name);
@@ -77,6 +77,7 @@
     $("summary").textContent = emotion.summary || "";
     $("narrative").textContent = plan ? plan.narrative : "";
     $("updatedAt").textContent = "updated " + timeAgo(updatedAt);
+    $("timeOfDay").textContent = timeCtx ? `🕗 ${timeCtx.local_time} · ${timeCtx.daypart}` : "";
     $("planSource").textContent = plan ? `music: ${plan.source}` : "";
 
     if (lastEmotion && lastEmotion !== name) {
@@ -333,7 +334,7 @@
     try {
       const s = await api("/api/state");
       if (s.auto_sync_interval) autoSyncInterval = s.auto_sync_interval;
-      renderEmotion(s.emotion, s.music_plan, s.updated_at);
+      renderEmotion(s.emotion, s.music_plan, s.updated_at, s.time_ctx);
       renderSnapshot(s.snapshot);
       renderWeather(s.weather);
       renderHistory(s.history);

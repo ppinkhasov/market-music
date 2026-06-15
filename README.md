@@ -3,10 +3,10 @@
 **A Spotify app that turns live market conditions into music.**
 
 market-music watches the stock & crypto markets in near-real-time, classifies the
-current *market emotion* (euphoric, fearful, chaotic, calm, …), optionally blends
-in your local weather, uses DeepSeek to interpret that mood as music, and
-builds/updates a Spotify playlist to match the regime — optionally starting
-playback on an active device.
+current *market emotion* (euphoric, fearful, chaotic, calm, …), tints it with the
+local time of day (and optionally your weather), uses DeepSeek to interpret that
+mood as music, and builds/updates a Spotify playlist to match the regime —
+optionally starting playback on an active device.
 
 > This is a modern rewrite of the original Raspberry-Pi-bound `market-music`
 > concept. The legacy scripts are preserved under [`legacy/`](legacy/).
@@ -45,6 +45,10 @@ weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
 2. **Emotion classifier** (`app/emotion_engine.py`) maps those signals to one of
    ten emotions with **transparent, deterministic rules** (no ML). Returns the
    emotion, a confidence, a human summary, and the inputs.
+2b. **Time of day** (`app/daypart.py`) — the local hour caps musical *energy*:
+   late at night even a euphoric or chaotic market is expressed calmly
+   (nocturnal / downtempo / ambient) rather than headbanging; midday allows full
+   energy. Local time comes from the set location's timezone, else server time.
 3. **Weather** (`app/weather.py`, *optional*) — enter a city or ZIP and the app
    pulls current conditions (Open-Meteo + zippopotam, both key-free). Weather is
    fed in as a secondary mood factor: rain/snow/overcast over a calm or sideways

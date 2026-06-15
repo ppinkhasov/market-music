@@ -100,6 +100,7 @@ async def state(request: Request):
         "emotion": s.emotion.to_dict() if s.emotion else None,
         "music_plan": s.music_plan.to_dict() if s.music_plan else None,
         "weather": s.weather.to_dict() if s.weather else None,
+        "time_ctx": s.time_ctx.to_dict() if s.time_ctx else None,
         "history": s.history,
         "session": {
             "logged_in": bool(session and session.logged_in),

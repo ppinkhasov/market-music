@@ -104,6 +104,8 @@ class Weather:
     precipitation: Optional[float] = None   # mm
     wind_mph: Optional[float] = None
     fetched_at: Optional[str] = None
+    utc_offset_seconds: Optional[int] = None   # location's UTC offset (for local time)
+    timezone: Optional[str] = None             # IANA tz name, e.g. "America/New_York"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -113,6 +115,21 @@ class Weather:
         d["latitude"] = _round(self.latitude, 4)
         d["longitude"] = _round(self.longitude, 4)
         return d
+
+
+@dataclass
+class TimeContext:
+    """Local time-of-day as a mood factor (caps energy — calmer at night)."""
+
+    hour: int                  # local hour 0-23
+    daypart: str               # "late night" | "morning" | "evening" | ...
+    descriptor: str            # vibe note for the narrative
+    energy_ceiling: float      # 0..1 — max musical energy appropriate for the hour
+    local_time: str            # display, e.g. "11:42 PM"
+    tz: str                    # timezone label
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass

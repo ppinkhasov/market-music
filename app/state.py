@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from . import emotion_engine, market_data, music, weather as weather_mod
+from . import daypart, emotion_engine, market_data, music, weather as weather_mod
 from .config import settings
-from .models import EmotionResult, MarketSnapshot, MusicPlan, PlaylistInfo, Weather
+from .models import EmotionResult, MarketSnapshot, MusicPlan, PlaylistInfo, TimeContext, Weather
 from .spotify_client import SpotifyApiError, SpotifyClient, TokenSet, refresh_token
 
 log = logging.getLogger("market_music")
@@ -100,6 +100,7 @@ class AppState:
     emotion: Optional[EmotionResult] = None
     music_plan: Optional[MusicPlan] = None
     weather: Optional[Weather] = None
+    time_ctx: Optional[TimeContext] = None
     updated_at: Optional[str] = None
     last_error: Optional[str] = None
     poll_count: int = 0
@@ -243,36 +244,40 @@ class Engine:
         # Snapshot weather once so the plan and the published state.weather are
         # built from the same value even if a location change races the await.
         weather_now = self._weather
+        time_ctx = daypart.compute(weather_now)
+        prev_daypart = self.state.time_ctx.daypart if self.state.time_ctx else None
+        time_changed = prev_daypart != time_ctx.daypart
         ts = datetime.now(timezone.utc).isoformat()
 
         prev_emotion = self.state.emotion.emotion if self.state.emotion else None
         emotion_changed = prev_emotion != emotion.emotion
 
-        # Rebuild the music plan when the market regime OR the weather changes
-        # (or we have none yet) — so a shift to rain re-tints the music.
+        # Rebuild the plan when the market regime, weather, OR daypart changes
+        # (so the music re-tints as rain rolls in or night falls).
         plan = self.state.music_plan
-        if (emotion_changed or weather_changed or plan is None
+        if (emotion_changed or weather_changed or time_changed or plan is None
                 or plan.emotion != emotion.emotion):
-            plan = await music.build_music_plan(emotion, snapshot, weather_now)
+            plan = await music.build_music_plan(emotion, snapshot, weather_now, time_ctx)
 
         async with self._lock:
             self.state.snapshot = snapshot
             self.state.emotion = emotion
             self.state.music_plan = plan
             self.state.weather = weather_now
+            self.state.time_ctx = time_ctx
             self.state.updated_at = ts
             self.state.last_error = None
             self.state.poll_count += 1
             self.state.record_history(emotion, ts)
 
-        log.info("poll #%d: emotion=%s conf=%.2f risk_on=%.2f vol=%.2f weather=%s",
+        log.info("poll #%d: emotion=%s conf=%.2f risk_on=%.2f vol=%.2f weather=%s @ %s",
                  self.state.poll_count, emotion.emotion, emotion.confidence,
                  snapshot.risk_on_score, snapshot.vol_shock_score,
-                 weather_now.condition if weather_now else "n/a")
+                 weather_now.condition if weather_now else "n/a", time_ctx.daypart)
 
         # Auto-sync fires on a regime change immediately, otherwise on the
         # periodic cadence (checked every poll, fires once the interval elapses).
-        await self._auto_sync_all(force=emotion_changed or weather_changed)
+        await self._auto_sync_all(force=emotion_changed or weather_changed or time_changed)
 
     # --- location / weather ------------------------------------------------
 
@@ -293,15 +298,19 @@ class Engine:
         await self._rebuild_plan_now()
 
     async def _rebuild_plan_now(self) -> None:
-        """Rebuild the music plan against the current emotion + weather."""
+        """Rebuild the music plan against the current emotion + weather + time."""
         weather_now = self._weather
+        time_ctx = daypart.compute(weather_now)
         if self.state.emotion is None or self.state.snapshot is None:
             self.state.weather = weather_now
+            self.state.time_ctx = time_ctx
             return
-        plan = await music.build_music_plan(self.state.emotion, self.state.snapshot, weather_now)
+        plan = await music.build_music_plan(self.state.emotion, self.state.snapshot,
+                                            weather_now, time_ctx)
         async with self._lock:
             self.state.music_plan = plan
             self.state.weather = weather_now
+            self.state.time_ctx = time_ctx
         # emotion is guaranteed non-None here (early return above).
         await self._auto_sync_all(plan, force=True)
 
@@ -453,7 +462,8 @@ class Engine:
             raise RuntimeError("no market state yet")
 
         plan = plan or self.state.music_plan or await music.build_music_plan(
-            self.state.emotion, self.state.snapshot, self._weather)
+            self.state.emotion, self.state.snapshot, self._weather,
+            daypart.compute(self._weather))
 
         client = await self.ensure_client(session)
 

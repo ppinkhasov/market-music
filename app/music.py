@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from . import deepseek_client
-from .models import EmotionResult, MarketSnapshot, MusicPlan, Track, Weather
+from .models import EmotionResult, MarketSnapshot, MusicPlan, TimeContext, Track, Weather
 
 # Deterministic fallback: hand-tuned music profile per emotion. Used whenever
 # DeepSeek is not configured or fails.
@@ -137,17 +137,47 @@ def _weather_adjust_fallback(plan: MusicPlan, weather: Optional[Weather]) -> Mus
     return plan
 
 
+# Calm, late-hours queries blended in when the time-of-day caps energy hard.
+_NIGHT_QUERIES = ["late night lo-fi", "downtempo nocturnal", "ambient after hours", "chill nightdrive"]
+# Dayparts that are genuinely nocturnal — soften the selection here, but NOT at
+# dawn (a wake-up, not a wind-down) even though its ceiling is also low.
+_NIGHT_DAYPARTS = {"night", "late night"}
+
+
+def _time_adjust_fallback(plan: MusicPlan, time_ctx: Optional[TimeContext],
+                          weather: Optional[Weather] = None) -> MusicPlan:
+    """Cap the fallback plan's energy to the hour and, at night, soften the
+    selection so a high-energy market isn't headbanging at 2am."""
+    if time_ctx is None or plan.target_energy <= time_ctx.energy_ceiling:
+        return plan
+    plan.target_energy = time_ctx.energy_ceiling
+    if time_ctx.daypart in _NIGHT_DAYPARTS:  # soften even high-energy moods
+        plan.search_queries = (_NIGHT_QUERIES
+                               + [q for q in plan.search_queries if q not in _NIGHT_QUERIES])[:10]
+        # Compose with the weather tint (if any) so it isn't erased.
+        if weather is not None and weather.is_precip:
+            plan.narrative = (f"{weather.condition} in {weather.location_name}, and it's "
+                              f"{time_ctx.local_time} — cozy, low-key and nocturnal for the "
+                              f"{plan.emotion} read.")
+        else:
+            plan.narrative = (f"It's {time_ctx.local_time} ({time_ctx.daypart}) — keeping the "
+                              f"{plan.emotion} market read low-key and nocturnal for the hour.")
+    return plan
+
+
 async def build_music_plan(emotion: EmotionResult, snapshot: MarketSnapshot,
-                           weather: Optional[Weather] = None) -> MusicPlan:
-    """Try DeepSeek (which sees the weather directly), else fall back to the
-    deterministic mapping with a weather tint applied."""
-    plan = await deepseek_client.interpret(emotion, snapshot, weather)
+                           weather: Optional[Weather] = None,
+                           time_ctx: Optional[TimeContext] = None) -> MusicPlan:
+    """Try DeepSeek (which sees weather + time directly), else fall back to the
+    deterministic mapping with weather and time-of-day tints applied."""
+    plan = await deepseek_client.interpret(emotion, snapshot, weather, time_ctx)
     if plan is not None and plan.search_queries:
         # If DeepSeek omitted genres, borrow from the fallback profile.
         if not plan.seed_genres:
             plan.seed_genres = EMOTION_MUSIC.get(emotion.emotion, {}).get("genres", [])
         return plan
-    return _weather_adjust_fallback(fallback_plan(emotion.emotion), weather)
+    fb = _weather_adjust_fallback(fallback_plan(emotion.emotion), weather)
+    return _time_adjust_fallback(fb, time_ctx, weather)
 
 
 async def assemble_tracks(spotify, plan: MusicPlan, limit: int) -> List[Track]:

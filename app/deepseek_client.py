@@ -17,7 +17,7 @@ from typing import List, Optional
 import httpx
 
 from .config import settings
-from .models import EmotionResult, MarketSnapshot, MusicPlan, Weather
+from .models import EmotionResult, MarketSnapshot, MusicPlan, TimeContext, Weather
 
 _SYSTEM_PROMPT = """You are a music director for an app that turns live financial-market \
 conditions into a Spotify playlist. You are given the market's current "emotion" \
@@ -45,11 +45,19 @@ snow, fog or overcast skies over a calm/sideways/mildly-positive market call for
 cozier, lower-energy, lo-fi / chill / rainy-day music; clear, sunny skies brighten \
 and lift the selection; a storm can add edge or drama. Never let mild weather \
 override a strong market signal (a violent selloff stays intense even in sunshine), \
-and weave the weather into the narrative when it meaningfully shifts the vibe."""
+and weave the weather into the narrative when it meaningfully shifts the vibe.
+
+If a time-of-day is provided, treat its energy_ceiling as a HARD CAP on sonic \
+intensity: target_energy must not exceed it, and the search_queries must match \
+that energy. Late at night, even a euphoric or chaotic market should be expressed \
+calmly (e.g. nocturnal/downtempo/ambient/late-night versions of the mood) rather \
+than aggressive, high-BPM, headbanging music. Midday allows full energy. Mention \
+the hour in the narrative when it shapes the choice."""
 
 
 def _build_user_payload(emotion: EmotionResult, snapshot: MarketSnapshot,
-                        weather: Optional[Weather] = None) -> str:
+                        weather: Optional[Weather] = None,
+                        time_ctx: Optional[TimeContext] = None) -> str:
     movers = {}
     for sym, a in snapshot.assets.items():
         movers[sym] = {
@@ -75,6 +83,12 @@ def _build_user_payload(emotion: EmotionResult, snapshot: MarketSnapshot,
             "is_precipitating": weather.is_precip,
             "temperature_f": weather.temp_f,
             "wind_mph": weather.wind_mph,
+        }
+    if time_ctx is not None:
+        payload["time_of_day"] = {
+            "local_time": time_ctx.local_time,
+            "daypart": time_ctx.daypart,
+            "energy_ceiling": time_ctx.energy_ceiling,
         }
     return json.dumps(payload)
 
@@ -111,10 +125,11 @@ def _coerce_plan(emotion: str, data: dict) -> Optional[MusicPlan]:
 
 
 async def interpret(emotion: EmotionResult, snapshot: MarketSnapshot,
-                    weather: Optional[Weather] = None) -> Optional[MusicPlan]:
-    """Ask DeepSeek to turn the market emotion (and optional weather) into a
-    music plan. Returns None on any failure so the caller can fall back to the
-    deterministic mapping."""
+                    weather: Optional[Weather] = None,
+                    time_ctx: Optional[TimeContext] = None) -> Optional[MusicPlan]:
+    """Ask DeepSeek to turn the market emotion (plus optional weather and
+    time-of-day) into a music plan. Returns None on any failure so the caller
+    can fall back to the deterministic mapping."""
     if not settings.deepseek_configured:
         return None
 
@@ -123,7 +138,7 @@ async def interpret(emotion: EmotionResult, snapshot: MarketSnapshot,
         "model": settings.deepseek_model,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_payload(emotion, snapshot, weather)},
+            {"role": "user", "content": _build_user_payload(emotion, snapshot, weather, time_ctx)},
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.8,
@@ -142,7 +157,11 @@ async def interpret(emotion: EmotionResult, snapshot: MarketSnapshot,
             data = resp.json()
         content = data["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-        return _coerce_plan(emotion.emotion, parsed)
+        plan = _coerce_plan(emotion.emotion, parsed)
+        # Hard-cap energy to the time-of-day ceiling even if the model overshot.
+        if plan and time_ctx and plan.target_energy > time_ctx.energy_ceiling:
+            plan.target_energy = time_ctx.energy_ceiling
+        return plan
     except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError,
             ValueError, json.JSONDecodeError):
         # Any malformed/empty response -> None so the caller uses the fallback.
