@@ -12,7 +12,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import spotify_client, weather as weather_mod
+import asyncio
+import re
+
+from . import config, market_data, spotify_client, weather as weather_mod
 from .config import settings
 from .state import UserSession, engine
 
@@ -93,20 +96,25 @@ async def state(request: Request):
             "spotify_configured": settings.spotify_configured,
             "deepseek_configured": settings.deepseek_configured,
             "tracked_assets": settings.tracked_assets,
+            "market_data_provider": settings.market_data_provider,
+            "polygon_configured": settings.polygon_configured,
         },
         "snapshot": s.snapshot.to_dict() if s.snapshot else None,
         "emotion": s.emotion.to_dict() if s.emotion else None,
         "music_plan": s.music_plan.to_dict() if s.music_plan else None,
         "weather": s.weather.to_dict() if s.weather else None,
+        "time_ctx": s.time_ctx.to_dict() if s.time_ctx else None,
         "history": s.history,
         "session": {
             "logged_in": bool(session and session.logged_in),
             "display_name": session.display_name if session else None,
             "auto_sync": session.auto_sync if session else False,
+            "dj_mode": session.dj_mode if session else False,
             "playlist": (session.last_playlist.to_dict()
                          if session and session.last_playlist else None),
             "synced_emotion": session.last_synced_emotion if session else None,
         },
+        "auto_sync_interval": settings.auto_sync_interval_seconds,
     }
     return JSONResponse(body)
 
@@ -139,6 +147,55 @@ async def set_location(request: Request):
 async def clear_location():
     await engine.clear_location()
     return {"ok": True}
+
+
+# --- Market data source (Polygon key) -------------------------------------
+
+@app.post("/api/config/polygon")
+async def set_polygon_key(request: Request):
+    """Save a Polygon API key to the local .env and switch to real-time mode."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    key = (payload.get("api_key") or "").strip()
+    if not key:
+        return JSONResponse({"error": "Enter a Polygon API key."}, status_code=400)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", key):
+        return JSONResponse({"error": "That doesn't look like a Polygon API key."}, status_code=400)
+    ok, msg = await asyncio.to_thread(market_data.validate_polygon_key, key)
+    if not ok:
+        return JSONResponse({"error": msg}, status_code=400)
+    # Apply live + persist so it survives a restart.
+    settings.polygon_api_key = key
+    settings.market_data_provider = "polygon"
+    market_data.reset_polygon()
+    try:
+        config.update_env({"POLYGON_API_KEY": key, "MARKET_DATA_PROVIDER": "polygon"})
+    except Exception:
+        log.exception("failed to persist polygon key to .env")
+        return JSONResponse({"error": "Saved live, but couldn't write .env."}, status_code=500)
+    return {"ok": True, "provider": "polygon"}
+
+
+@app.post("/api/config/provider")
+async def set_provider(request: Request):
+    """Switch the active market-data provider (yfinance | polygon)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    provider = (payload.get("provider") or "").strip()
+    if provider not in ("yfinance", "polygon"):
+        return JSONResponse({"error": "Provider must be 'yfinance' or 'polygon'."}, status_code=400)
+    if provider == "polygon" and not settings.polygon_configured:
+        return JSONResponse({"error": "No Polygon key set yet."}, status_code=400)
+    settings.market_data_provider = provider
+    try:
+        config.update_env({"MARKET_DATA_PROVIDER": provider})
+    except Exception:
+        log.exception("failed to persist provider to .env")
+    return {"ok": True, "provider": provider}
 
 
 # --- Spotify OAuth --------------------------------------------------------
@@ -226,10 +283,15 @@ async def update_settings(request: Request):
     session = _require_login(request)
     if not session:
         return JSONResponse({"error": "Not logged in to Spotify."}, status_code=401)
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
     if "auto_sync" in payload:
         session.auto_sync = bool(payload["auto_sync"])
-    return {"ok": True, "auto_sync": session.auto_sync}
+    if "dj_mode" in payload:
+        await engine.set_dj_mode(session, bool(payload["dj_mode"]))
+    return {"ok": True, "auto_sync": session.auto_sync, "dj_mode": session.dj_mode}
 
 
 @app.get("/api/devices")

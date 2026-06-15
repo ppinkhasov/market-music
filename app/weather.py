@@ -123,15 +123,17 @@ async def _geocode(client: httpx.AsyncClient, query: str) -> dict:
 
 
 async def _current(client: httpx.AsyncClient, lat: float, lon: float) -> dict:
+    """Returns the full forecast JSON (current conditions + timezone metadata)."""
     resp = await client.get(FORECAST_URL, params={
         "latitude": lat,
         "longitude": lon,
         "current": "temperature_2m,weather_code,precipitation,wind_speed_10m",
         "temperature_unit": "fahrenheit",
         "wind_speed_unit": "mph",
+        "timezone": "auto",   # also returns utc_offset_seconds + timezone name
     })
     resp.raise_for_status()
-    return resp.json().get("current", {}) or {}
+    return resp.json()
 
 
 async def fetch_weather(query: str) -> Weather:
@@ -142,16 +144,24 @@ async def fetch_weather(query: str) -> Weather:
     async with httpx.AsyncClient(timeout=15.0) as client:
         loc = await _geocode(client, query)
         try:
-            cur = await _current(client, loc["latitude"], loc["longitude"])
+            forecast = await _current(client, loc["latitude"], loc["longitude"])
         except (httpx.HTTPError, ValueError):
             raise WeatherError("Weather service is unavailable right now.")
 
+    cur = forecast.get("current", {}) or {}
     raw_code = cur.get("weather_code")
     try:
         code = int(raw_code) if raw_code is not None else -1
     except (ValueError, TypeError):
         code = -1
     condition, emoji, is_precip = describe_code(code)
+
+    offset = forecast.get("utc_offset_seconds")
+    try:
+        offset = int(offset) if offset is not None else None
+    except (ValueError, TypeError):
+        offset = None
+
     return Weather(
         query=query.strip(),
         location_name=loc["name"],
@@ -165,4 +175,6 @@ async def fetch_weather(query: str) -> Weather:
         precipitation=cur.get("precipitation"),
         wind_mph=cur.get("wind_speed_10m"),
         fetched_at=datetime.now(timezone.utc).isoformat(),
+        utc_offset_seconds=offset,
+        timezone=forecast.get("timezone"),
     )

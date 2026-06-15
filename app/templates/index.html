@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
+  <canvas id="bgCanvas"></canvas>
   <div class="bg-glow" id="bgGlow"></div>
 
   <header class="topbar">
@@ -47,6 +48,7 @@
       <p class="narrative" id="narrative"></p>
       <div class="meta-row">
         <span class="muted" id="updatedAt">—</span>
+        <span class="muted" id="timeOfDay"></span>
         <span class="muted" id="planSource"></span>
       </div>
     </section>
@@ -61,6 +63,17 @@
                placeholder="City or ZIP — e.g. Seattle or 98101" aria-label="Location" />
         <button class="btn" type="submit" id="setLocBtn">Set</button>
         <button class="btn ghost" type="button" id="clearLocBtn" hidden>Clear</button>
+      </form>
+    </section>
+
+    <!-- Market data source: yfinance (default) or real-time Polygon -->
+    <section class="card weather-bar data-bar">
+      <div class="weather-now" id="dataNow"></div>
+      <form class="weather-form" id="polygonForm" autocomplete="off">
+        <input id="polygonKey" type="password"
+               placeholder="Polygon API key — real-time futures" aria-label="Polygon API key" />
+        <button class="btn" type="submit" id="polygonBtn">Enable real-time</button>
+        <button class="btn ghost" type="button" id="revertProviderBtn" hidden>Use yfinance</button>
       </form>
     </section>
 
@@ -123,6 +136,7 @@
   <div class="toast" id="toast"></div>
 
   <script>window.__POLL_INTERVAL__ = {{ poll_interval }};</script>
+  <script src="/static/scene.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

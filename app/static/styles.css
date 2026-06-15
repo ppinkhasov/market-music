@@ -38,11 +38,16 @@ body {
   overflow-x: hidden;
 }
 
+#bgCanvas {
+  position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0;
+  display: block; pointer-events: none;
+}
+
 .bg-glow {
   position: fixed; inset: -30vh -10vw auto -10vw; height: 80vh; z-index: 0;
   background: radial-gradient(60% 60% at 30% 20%, color-mix(in srgb, var(--accent) 38%, transparent), transparent 70%),
               radial-gradient(50% 50% at 80% 10%, color-mix(in srgb, var(--accent-2) 30%, transparent), transparent 70%);
-  filter: blur(40px); opacity: 0.55; pointer-events: none;
+  filter: blur(40px); opacity: 0.30; pointer-events: none;
   transition: background 1.2s ease, opacity 1.2s ease;
 }
 
@@ -60,13 +65,13 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 20px 60px; }
 .tagline { margin: 0; color: var(--muted); font-size: 0.82rem; }
 .auth { display: flex; align-items: center; gap: 10px; }
 
-/* Cards */
+/* Cards — dark translucent base so text stays readable over any sky. */
 .card {
-  background: var(--surface);
+  background: rgba(12, 14, 26, 0.58);
   border: 1px solid var(--border);
   border-radius: 18px;
   padding: 22px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px);
 }
 
 /* Hero */
@@ -128,8 +133,11 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 20px 60px; }
   border: 1px solid transparent; transition: border-color 0.3s;
 }
 .asset:hover { border-color: var(--border); }
-.asset .a-name { font-weight: 600; }
+.asset .a-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .asset .a-sym { color: var(--muted); font-size: 0.74rem; }
+.src-badge { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 6px; border-radius: 6px; font-weight: 700; }
+.src-badge.src-polygon { color: #7c5cff; background: rgba(124,92,255,0.15); }
+.src-badge.src-yfinance { color: var(--muted); background: var(--surface-2); }
 .asset .a-right { text-align: right; }
 .asset .a-price { font-variant-numeric: tabular-nums; }
 .a-chg { font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -137,6 +145,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 20px 60px; }
 .a-chg.down { color: var(--red); }
 .a-chg.flat { color: var(--muted); }
 .a-sub { font-size: 0.7rem; color: var(--muted); }
+.asset .stale, .a-name.stale { opacity: 0.45; }
 
 /* Spotify panel */
 .controls { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
@@ -158,6 +167,9 @@ select {
 }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted); cursor: pointer; }
 .toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+.tip { font-size: 0.76rem; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 12px; line-height: 1.45; }
+.tip b { color: var(--text); font-weight: 600; }
 
 .chip { font-size: 0.76rem; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--border); }
 .chip.ok { color: var(--spotify); border-color: color-mix(in srgb, var(--spotify) 40%, transparent); }

@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from . import emotion_engine, market_data, music, weather as weather_mod
+from . import daypart, emotion_engine, market_data, music, weather as weather_mod
 from .config import settings
-from .models import EmotionResult, MarketSnapshot, MusicPlan, PlaylistInfo, Weather
-from .spotify_client import SpotifyClient, TokenSet, refresh_token
+from .models import EmotionResult, MarketSnapshot, MusicPlan, PlaylistInfo, TimeContext, Weather
+from .spotify_client import SpotifyApiError, SpotifyClient, TokenSet, refresh_token
 
 log = logging.getLogger("market_music")
 
@@ -32,14 +32,24 @@ class UserSession:
     display_name: Optional[str] = None
     playlist_id: Optional[str] = None
     playlist_url: Optional[str] = None
-    auto_sync: bool = False
+    auto_sync: bool = True            # re-sync the playlist to the market periodically
+    last_synced_at: float = 0.0       # epoch of last successful sync (periodic timer)
     oauth_state: Optional[str] = None
     last_synced_emotion: Optional[str] = None
     last_playlist: Optional[PlaylistInfo] = None
     created_at: float = field(default_factory=time.time)
+    # DJ mode: fade volume around track boundaries for a continuous-stream feel.
+    dj_mode: bool = False
+    dj_target_volume: Optional[int] = None   # the listener's "cruise" volume
+    dj_last_track_uri: Optional[str] = None
+    dj_last_set_volume: Optional[int] = None
     # Per-session token-refresh lock (lazily created on the running loop so
     # independent sessions never serialize behind one global lock).
     refresh_lock: Optional[asyncio.Lock] = None
+
+    @property
+    def dj_active(self) -> bool:
+        return self.logged_in and self.dj_mode
 
     @property
     def logged_in(self) -> bool:
@@ -90,6 +100,7 @@ class AppState:
     emotion: Optional[EmotionResult] = None
     music_plan: Optional[MusicPlan] = None
     weather: Optional[Weather] = None
+    time_ctx: Optional[TimeContext] = None
     updated_at: Optional[str] = None
     last_error: Optional[str] = None
     poll_count: int = 0
@@ -119,6 +130,7 @@ class Engine:
         # would bind them to the wrong loop and break the poller under load.
         self._lock: Optional[asyncio.Lock] = None
         self._task: Optional[asyncio.Task] = None
+        self._dj_task: Optional[asyncio.Task] = None
         self._stop: Optional[asyncio.Event] = None
         # Weather (optional mood factor). Location can be preset via env or set
         # live in the UI; weather is refreshed on a slower cadence than prices.
@@ -138,6 +150,8 @@ class Engine:
             self._stop.clear()
             self._task = asyncio.create_task(self._run())
             self._task.add_done_callback(self._on_task_done)
+        if self._dj_task is None or self._dj_task.done():
+            self._dj_task = asyncio.create_task(self._dj_loop())
 
     def _on_task_done(self, task: "asyncio.Task") -> None:
         # Surface an unexpectedly-dead poller instead of swallowing its error.
@@ -154,12 +168,13 @@ class Engine:
     async def stop(self) -> None:
         if self._stop is not None:
             self._stop.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._task, self._dj_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     async def _run(self) -> None:
         # Prime immediately, then loop on the interval. Every await in the loop
@@ -213,41 +228,56 @@ class Engine:
         return (w.code != prev_code) or (w.is_precip != prev_precip)
 
     async def poll_once(self) -> None:
-        snapshot = await asyncio.to_thread(market_data.fetch_snapshot, settings.tracked_assets)
+        # Bound the (blocking) fetch so a slow/hung data source can't stall the
+        # poller past its interval. The worker thread can't be cancelled, but
+        # wait_for unblocks the loop; per-call timeouts cap the orphaned thread.
+        budget = max(30, settings.poll_interval_seconds - 5)
+        try:
+            snapshot = await asyncio.wait_for(
+                asyncio.to_thread(market_data.fetch_snapshot), timeout=budget)
+        except asyncio.TimeoutError:
+            self.state.last_error = "market data fetch timed out"
+            log.warning("market data fetch timed out after %ss", budget)
+            return
         emotion = emotion_engine.classify(snapshot)
         weather_changed = await self._refresh_weather()
         # Snapshot weather once so the plan and the published state.weather are
         # built from the same value even if a location change races the await.
         weather_now = self._weather
+        time_ctx = daypart.compute(weather_now)
+        prev_daypart = self.state.time_ctx.daypart if self.state.time_ctx else None
+        time_changed = prev_daypart != time_ctx.daypart
         ts = datetime.now(timezone.utc).isoformat()
 
         prev_emotion = self.state.emotion.emotion if self.state.emotion else None
         emotion_changed = prev_emotion != emotion.emotion
 
-        # Rebuild the music plan when the market regime OR the weather changes
-        # (or we have none yet) — so a shift to rain re-tints the music.
+        # Rebuild the plan when the market regime, weather, OR daypart changes
+        # (so the music re-tints as rain rolls in or night falls).
         plan = self.state.music_plan
-        if (emotion_changed or weather_changed or plan is None
+        if (emotion_changed or weather_changed or time_changed or plan is None
                 or plan.emotion != emotion.emotion):
-            plan = await music.build_music_plan(emotion, snapshot, weather_now)
+            plan = await music.build_music_plan(emotion, snapshot, weather_now, time_ctx)
 
         async with self._lock:
             self.state.snapshot = snapshot
             self.state.emotion = emotion
             self.state.music_plan = plan
             self.state.weather = weather_now
+            self.state.time_ctx = time_ctx
             self.state.updated_at = ts
             self.state.last_error = None
             self.state.poll_count += 1
             self.state.record_history(emotion, ts)
 
-        log.info("poll #%d: emotion=%s conf=%.2f risk_on=%.2f vol=%.2f weather=%s",
+        log.info("poll #%d: emotion=%s conf=%.2f risk_on=%.2f vol=%.2f weather=%s @ %s",
                  self.state.poll_count, emotion.emotion, emotion.confidence,
                  snapshot.risk_on_score, snapshot.vol_shock_score,
-                 weather_now.condition if weather_now else "n/a")
+                 weather_now.condition if weather_now else "n/a", time_ctx.daypart)
 
-        if emotion_changed or weather_changed:
-            await self._auto_sync_all()
+        # Auto-sync fires on a regime change immediately, otherwise on the
+        # periodic cadence (checked every poll, fires once the interval elapses).
+        await self._auto_sync_all(force=emotion_changed or weather_changed or time_changed)
 
     # --- location / weather ------------------------------------------------
 
@@ -268,30 +298,149 @@ class Engine:
         await self._rebuild_plan_now()
 
     async def _rebuild_plan_now(self) -> None:
-        """Rebuild the music plan against the current emotion + weather."""
+        """Rebuild the music plan against the current emotion + weather + time."""
         weather_now = self._weather
+        time_ctx = daypart.compute(weather_now)
         if self.state.emotion is None or self.state.snapshot is None:
             self.state.weather = weather_now
+            self.state.time_ctx = time_ctx
             return
-        plan = await music.build_music_plan(self.state.emotion, self.state.snapshot, weather_now)
+        plan = await music.build_music_plan(self.state.emotion, self.state.snapshot,
+                                            weather_now, time_ctx)
         async with self._lock:
             self.state.music_plan = plan
             self.state.weather = weather_now
+            self.state.time_ctx = time_ctx
         # emotion is guaranteed non-None here (early return above).
-        await self._auto_sync_all(plan)
+        await self._auto_sync_all(plan, force=True)
 
-    async def _auto_sync_all(self, plan: Optional[MusicPlan] = None) -> None:
+    async def _auto_sync_all(self, plan: Optional[MusicPlan] = None,
+                             force: bool = False) -> None:
         # Snapshot the plan once so every session in this pass syncs the same one.
         if plan is None:
             async with self._lock:
                 plan = self.state.music_plan
+        now = time.time()
+        interval = settings.auto_sync_interval_seconds
         for session in self.sessions.logged_in_sessions():
             if not session.auto_sync:
+                continue
+            # Force on a regime change; otherwise only when the cadence elapsed.
+            if not force and (now - session.last_synced_at) < interval:
                 continue
             try:
                 await self.sync_playlist(session, plan)
             except Exception:
                 log.exception("auto-sync failed for session %s", session.session_id[:8])
+
+    # --- DJ stream (volume fades around track boundaries) ------------------
+
+    async def set_dj_mode(self, session: UserSession, on: bool) -> None:
+        """Toggle DJ mode for a session, capturing/restoring the cruise volume."""
+        if on:
+            session.dj_mode = True
+            session.dj_last_set_volume = None
+            session.dj_last_track_uri = None
+            try:  # capture the listener's current volume as the cruise level
+                client = await self.ensure_client(session)
+                player = await client.get_playback()
+                vol = ((player or {}).get("device") or {}).get("volume_percent")
+                if vol is not None:
+                    session.dj_target_volume = int(vol)
+            except Exception:
+                pass
+        else:
+            session.dj_mode = False  # stop the loop touching volume first
+            if session.dj_target_volume is not None:
+                try:
+                    client = await self.ensure_client(session)
+                    await client.set_volume(session.dj_target_volume)
+                except Exception:
+                    pass
+            session.dj_last_set_volume = None
+
+    async def _dj_loop(self) -> None:
+        """Fast loop that fades device volume near track boundaries for DJ-mode
+        sessions. Idle-cheap when nobody has DJ mode on."""
+        while self._stop is None or not self._stop.is_set():
+            try:
+                dj_sessions = [s for s in self.sessions.logged_in_sessions() if s.dj_mode]
+                if not dj_sessions:
+                    await asyncio.sleep(max(3.0, settings.dj_tick_seconds * 2))
+                    continue
+                for session in dj_sessions:
+                    try:
+                        await self._dj_step(session)
+                    except Exception:
+                        log.debug("dj step failed for %s", session.session_id[:8], exc_info=True)
+                await asyncio.sleep(settings.dj_tick_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("dj loop error")
+                await asyncio.sleep(settings.dj_tick_seconds)
+
+    async def _dj_step(self, session: UserSession) -> None:
+        client = await self.ensure_client(session)
+        try:
+            player = await client.get_playback()
+        except SpotifyApiError as exc:
+            if exc.status == 403:  # not Premium -> DJ mode unavailable
+                session.dj_mode = False
+                log.info("DJ mode needs Spotify Premium; disabling for %s",
+                         session.session_id[:8])
+            return
+        if not session.dj_mode:      # toggled off while we awaited get_playback
+            return
+        if not player or not player.get("is_playing"):
+            return
+        item = player.get("item") or {}
+        device = player.get("device") or {}
+        track_uri = item.get("uri")
+        duration = item.get("duration_ms")
+        progress = player.get("progress_ms")
+        device_id = device.get("id")
+        if not track_uri or duration is None or progress is None:
+            return
+        if device.get("supports_volume") is False:  # e.g. some cast/connect devices
+            return
+
+        # Capture the cruise volume the first time we manage this session. If the
+        # device doesn't report a volume yet, skip — never assume max (would
+        # blast the device to 100%).
+        if session.dj_target_volume is None:
+            vol = device.get("volume_percent")
+            if vol is None:
+                return
+            session.dj_target_volume = int(vol)
+        target = session.dj_target_volume
+        floor = min(settings.dj_floor_volume, target)
+        fade_ms = settings.dj_fade_seconds * 1000.0
+        remaining = duration - progress
+        session.dj_last_track_uri = track_uri
+
+        if remaining <= fade_ms:                 # fading out near the end
+            frac = max(0.0, remaining / fade_ms)
+            desired = round(floor + (target - floor) * frac)
+        elif progress <= fade_ms:                # fading in at the start
+            frac = min(1.0, progress / fade_ms)
+            desired = round(floor + (target - floor) * frac)
+        else:                                    # mid-track: cruise
+            desired = target
+
+        if not session.dj_mode:      # toggled off mid-step -> don't fight the restore
+            return
+        # Throttle intermediate steps, but always land exactly on the terminal
+        # values (full cruise restore / full fade floor) so no residual offset.
+        terminal = desired == target or desired == floor
+        if (session.dj_last_set_volume is None or terminal
+                or abs(desired - session.dj_last_set_volume) >= 3):
+            try:
+                await client.set_volume(desired, device_id=device_id)
+                session.dj_last_set_volume = desired
+            except SpotifyApiError as exc:
+                if exc.status == 403:
+                    session.dj_mode = False
 
     # --- spotify helpers ---------------------------------------------------
 
@@ -313,7 +462,8 @@ class Engine:
             raise RuntimeError("no market state yet")
 
         plan = plan or self.state.music_plan or await music.build_music_plan(
-            self.state.emotion, self.state.snapshot, self._weather)
+            self.state.emotion, self.state.snapshot, self._weather,
+            daypart.compute(self._weather))
 
         client = await self.ensure_client(session)
 
@@ -360,6 +510,7 @@ class Engine:
         )
         session.last_playlist = info
         session.last_synced_emotion = plan.emotion
+        session.last_synced_at = time.time()
         return info
 
 

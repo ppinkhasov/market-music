@@ -3,10 +3,10 @@
 **A Spotify app that turns live market conditions into music.**
 
 market-music watches the stock & crypto markets in near-real-time, classifies the
-current *market emotion* (euphoric, fearful, chaotic, calm, …), optionally blends
-in your local weather, uses DeepSeek to interpret that mood as music, and
-builds/updates a Spotify playlist to match the regime — optionally starting
-playback on an active device.
+current *market emotion* (euphoric, fearful, chaotic, calm, …), tints it with the
+local time of day (and optionally your weather), uses DeepSeek to interpret that
+mood as music, and builds/updates a Spotify playlist to match the regime —
+optionally starting playback on an active device.
 
 > This is a modern rewrite of the original Raspberry-Pi-bound `market-music`
 > concept. The legacy scripts are preserved under [`legacy/`](legacy/).
@@ -28,14 +28,27 @@ weather (optional) ────────────────────�
 Weather is an optional second factor: the market drives the overall energy, the
 weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
 
-1. **Market engine** (`app/market_data.py`) polls SPY, QQQ, BTC, ETH and the VIX
-   every ~45s via Yahoo Finance (free, no key) and derives bounded signals:
-   intraday % change, 5-min / 1-hour momentum, gap from prior close, realized
-   volatility, trend, and three aggregates — **risk-on score**, **volatility
-   shock**, **dispersion** — plus an intraday **reversal** detector.
+1. **Market engine** (`app/market_data.py`) polls the basket every ~45s and
+   derives bounded signals: intraday % change, 5-min / 1-hour momentum, gap from
+   prior close, realized volatility, trend, and three aggregates — **risk-on
+   score**, **volatility shock**, **dispersion** — plus an intraday **reversal**
+   detector. Two pluggable providers behind one interface:
+   - **yfinance** (default, free, ~15-min delayed): SPY, QQQ, BTC, ETH, VIX.
+   - **polygon** (`MARKET_DATA_PROVIDER=polygon` + key): **real-time stocks**
+     (SPY, QQQ) and **futures** (ES, NQ, BTC, ETH front-month) — futures keep the
+     app live overnight/weekends. VIX comes from yfinance (Polygon doesn't serve
+     it), and any symbol Polygon can't fetch falls back to yfinance per-asset.
+
+   Assets whose latest bar is **stale** (a closed market) are flagged and
+   excluded from the mood — so when cash equities are shut, the read comes from
+   live index futures + crypto, not Friday's frozen prints (`STALE_AFTER_SECONDS`).
 2. **Emotion classifier** (`app/emotion_engine.py`) maps those signals to one of
    ten emotions with **transparent, deterministic rules** (no ML). Returns the
    emotion, a confidence, a human summary, and the inputs.
+2b. **Time of day** (`app/daypart.py`) — the local hour caps musical *energy*:
+   late at night even a euphoric or chaotic market is expressed calmly
+   (nocturnal / downtempo / ambient) rather than headbanging; midday allows full
+   energy. Local time comes from the set location's timezone, else server time.
 3. **Weather** (`app/weather.py`, *optional*) — enter a city or ZIP and the app
    pulls current conditions (Open-Meteo + zippopotam, both key-free). Weather is
    fed in as a secondary mood factor: rain/snow/overcast over a calm or sideways
@@ -48,9 +61,18 @@ weather tints the texture (e.g. rain over a sideways market → cozy lo-fi).
 5. **Spotify** (`app/spotify_client.py`) — OAuth login, then builds the playlist
    from **Search** results (the deprecated Recommendations/Audio-Features
    endpoints are intentionally not used), and can start playback on a device.
+   With **auto-sync** on (default), the playlist re-syncs to the market every
+   ~3 min (and instantly on a regime change). **DJ mode** fades the device
+   volume down/up around track boundaries for a continuous-stream feel — pair it
+   with Spotify's built-in Crossfade (Settings → Playback) for true audio overlap.
 
 The web UI (`app/templates`, `app/static`) is an emotion-reactive dashboard that
-polls `/api/state` and recolors itself to the current mood.
+polls `/api/state` and recolors itself to the current mood. The background is a
+generative canvas sky (`app/static/scene.js`) that shifts with the time of day
+and weather, with motion that pulses to the current energy — an ambient
+"visualizer" (Spotify's DRM stream can't be sampled for real audio FFT). The
+market-data source can also be switched to real-time Polygon by pasting a key
+right in the UI (saved to `.env`).
 
 ## Quick start
 
@@ -83,7 +105,9 @@ Copy `.env.example` to `.env`. Key settings:
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | From the [Spotify dashboard](https://developer.spotify.com/dashboard). Required for playlists. |
 | `SPOTIFY_REDIRECT_URI` | Must **exactly** match a Redirect URI on your Spotify app. Default `http://127.0.0.1:8000/auth/callback`. |
 | `DEEPSEEK_API_KEY` | Optional. From [platform.deepseek.com](https://platform.deepseek.com). |
-| `TRACKED_ASSETS` | Comma-separated tickers (default `SPY,QQQ,BTC-USD,ETH-USD,^VIX`). |
+| `MARKET_DATA_PROVIDER` | `yfinance` (default) or `polygon` (real-time stocks + futures). |
+| `POLYGON_API_KEY` | Polygon key; required for `polygon` mode. Stocks + futures entitlements. |
+| `TRACKED_ASSETS` | Comma-separated tickers for yfinance mode (default `SPY,QQQ,BTC-USD,ETH-USD,^VIX`). |
 | `POLL_INTERVAL_SECONDS` | Market poll cadence (default `45`). |
 | `WEATHER_LOCATION` | Optional preset city/ZIP for the weather factor (also settable in the UI). |
 | `PLAYLIST_NAME` / `PLAYLIST_SIZE` | The managed playlist's name and length. |
@@ -155,7 +179,8 @@ app/
   music.py           # emotion→music mapping + playlist assembly via search
   spotify_client.py  # OAuth + Web API client
   state.py           # sessions, app state, background poller
-  main.py            # FastAPI routes + lifespan
-  templates/ static/ # web UI
+  daypart.py         # time-of-day energy ceiling
+  main.py            # FastAPI routes + lifespan (incl. /api/config/polygon)
+  templates/ static/ # web UI (static/scene.js = dynamic background)
 legacy/              # the original Raspberry Pi scripts
 ```

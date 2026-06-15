@@ -28,6 +28,7 @@
 
   let loggedIn = false;
   let autoSync = false;
+  let autoSyncInterval = 180;
   let lastEmotion = null;
 
   // --- helpers -------------------------------------------------------------
@@ -65,7 +66,7 @@
   }
 
   // --- renderers -----------------------------------------------------------
-  function renderEmotion(emotion, plan, updatedAt) {
+  function renderEmotion(emotion, plan, updatedAt, timeCtx) {
     if (!emotion) return;
     const name = emotion.emotion;
     document.documentElement.setAttribute("data-emotion", name);
@@ -76,6 +77,7 @@
     $("summary").textContent = emotion.summary || "";
     $("narrative").textContent = plan ? plan.narrative : "";
     $("updatedAt").textContent = "updated " + timeAgo(updatedAt);
+    $("timeOfDay").textContent = timeCtx ? `🕗 ${timeCtx.local_time} · ${timeCtx.daypart}` : "";
     $("planSource").textContent = plan ? `music: ${plan.source}` : "";
 
     if (lastEmotion && lastEmotion !== name) {
@@ -117,14 +119,20 @@
       if (a.change_1h != null) sub.push("1h " + fmtPct(a.change_1h));
 
       let symText = a.symbol;
+      if (a.kind && a.kind !== "stock") symText += " · " + a.kind;
       if (a.error) symText += " · error";
-      else if (!a.market_open) symText += " · closed (last session)";
+      else if (a.stale) symText += " · closed (not in mood)";
 
       const left = makeEl("div");
-      left.appendChild(makeEl("div", "a-name", a.name));
+      const nameRow = makeEl("div", "a-name" + (a.stale ? " stale" : ""), a.name);
+      if (a.source) {
+        const badge = makeEl("span", "src-badge src-" + a.source, a.source);
+        nameRow.appendChild(badge);
+      }
+      left.appendChild(nameRow);
       left.appendChild(makeEl("div", "a-sym", symText));
 
-      const right = makeEl("div", "a-right");
+      const right = makeEl("div", "a-right" + (a.stale ? " stale" : ""));
       right.appendChild(makeEl("div", "a-chg " + dir, fmtPct(a.change_pct)));
       right.appendChild(makeEl("div", "a-price",
         (a.price != null) ? a.price.toLocaleString(undefined, {maximumFractionDigits: 2}) : "—"));
@@ -195,17 +203,23 @@
     // Logged in: only (re)build controls once.
     if (c.dataset.built === "1") return;
     c.dataset.built = "1";
+    const mins = Math.max(1, Math.round((autoSyncInterval || 180) / 60));
     c.innerHTML = `
       <div class="row">
         <button class="btn primary" id="syncBtn">⟳ Sync to mood</button>
         <button class="btn" id="playBtn">▶ Play</button>
         <select id="deviceSelect"><option value="">Active device</option></select>
       </div>
-      <label class="toggle"><input type="checkbox" id="autoSync"/> Auto-sync playlist when the mood changes</label>`;
+      <label class="toggle"><input type="checkbox" id="autoSync"/> Auto-sync playlist to the market every ${mins} min</label>
+      <label class="toggle"><input type="checkbox" id="djMode"/> 🎚️ DJ mode — fade volume between tracks (Spotify Premium)</label>
+      <div class="tip" id="crossfadeTip">💡 For true overlapping crossfade, also enable <b>Crossfade</b> in Spotify → Settings → Playback.</div>`;
 
+    $("autoSync").checked = !!session.auto_sync;
+    $("djMode").checked = !!session.dj_mode;
     $("syncBtn").addEventListener("click", doSync);
     $("playBtn").addEventListener("click", doPlay);
     $("autoSync").addEventListener("change", toggleAutoSync);
+    $("djMode").addEventListener("change", toggleDjMode);
     $("deviceSelect").addEventListener("focus", loadDevices);
     loadDevices();
   }
@@ -239,6 +253,17 @@
       const data = await api("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ auto_sync: on }) });
       toast(data.auto_sync ? "Auto-sync on — playlist follows the market." : "Auto-sync off.");
+    } catch (e) { ev.target.checked = !on; toast(e.message, true); }
+  }
+
+  async function toggleDjMode(ev) {
+    const on = ev.target.checked;
+    try {
+      const data = await api("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ dj_mode: on }) });
+      toast(data.dj_mode
+        ? "DJ mode on — fading volume between tracks (needs Premium + active playback)."
+        : "DJ mode off — volume restored.");
     } catch (e) { ev.target.checked = !on; toast(e.message, true); }
   }
 
@@ -289,6 +314,52 @@
     }
   }
 
+  function renderDataSource(cfg) {
+    const now = $("dataNow");
+    if (!now) return;
+    const isPoly = cfg.market_data_provider === "polygon" && cfg.polygon_configured;
+    now.innerHTML = "";
+    now.appendChild(makeEl("span", null, "Market data: "));
+    if (isPoly) {
+      now.appendChild(makeEl("b", "src-badge src-polygon", "POLYGON"));
+      now.appendChild(makeEl("span", "muted", " real-time stocks + futures"));
+    } else {
+      now.appendChild(makeEl("b", null, "yfinance"));
+      now.appendChild(makeEl("span", "muted", " · ~15-min delayed. Add a Polygon key for real-time futures →"));
+    }
+    // Show the key form for yfinance; a revert button when already on Polygon.
+    const focused = document.activeElement === $("polygonKey");
+    if (!focused) {
+      $("polygonKey").style.display = isPoly ? "none" : "";
+      $("polygonBtn").style.display = isPoly ? "none" : "";
+      $("revertProviderBtn").hidden = !isPoly;
+    }
+  }
+
+  async function submitPolygonKey() {
+    const key = $("polygonKey").value.trim();
+    if (!key) return;
+    const btn = $("polygonBtn");
+    btn.disabled = true; const lbl = btn.textContent; btn.textContent = "Checking…";
+    try {
+      await api("/api/config/polygon", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ api_key: key }) });
+      $("polygonKey").value = "";
+      toast("Real-time Polygon data enabled 🛰️");
+      tick();
+    } catch (e) { toast(e.message, true); }
+    finally { btn.disabled = false; btn.textContent = lbl; }
+  }
+
+  async function switchProvider(provider) {
+    try {
+      await api("/api/config/provider", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ provider }) });
+      toast(`Switched market data to ${provider}.`);
+      tick();
+    } catch (e) { toast(e.message, true); }
+  }
+
   async function submitLocation(query) {
     const btn = $("setLocBtn");
     btn.disabled = true; const label = btn.textContent; btn.textContent = "…";
@@ -308,9 +379,12 @@
   async function tick() {
     try {
       const s = await api("/api/state");
-      renderEmotion(s.emotion, s.music_plan, s.updated_at);
+      if (s.auto_sync_interval) autoSyncInterval = s.auto_sync_interval;
+      renderEmotion(s.emotion, s.music_plan, s.updated_at, s.time_ctx);
+      if (window.Scene) window.Scene.update(s);
       renderSnapshot(s.snapshot);
       renderWeather(s.weather);
+      renderDataSource(s.config || {});
       renderHistory(s.history);
 
       const session = s.session || {};
@@ -318,9 +392,15 @@
       renderControls(session, s.config.spotify_configured);
       if (session.playlist) renderPlaylist(session.playlist);
 
-      // sync auto-sync checkbox state if present
+      // keep the toggles in sync with server state (unless being edited)
       const autoBox = $("autoSync");
-      if (autoBox && autoBox.checked !== session.auto_sync) autoBox.checked = session.auto_sync;
+      if (autoBox && document.activeElement !== autoBox && autoBox.checked !== session.auto_sync) {
+        autoBox.checked = session.auto_sync;
+      }
+      const djBox = $("djMode");
+      if (djBox && document.activeElement !== djBox && djBox.checked !== session.dj_mode) {
+        djBox.checked = session.dj_mode;
+      }
 
       if (s.last_error) $("footStatus").textContent = "⚠ " + s.last_error;
       else $("footStatus").textContent = `polling every ${window.__POLL_INTERVAL__}s · ${s.poll_count} polls`;
@@ -340,6 +420,12 @@
     const q = $("locationInput").value.trim();
     if (q) submitLocation(q);
   });
+  // wire up the Polygon data-source form
+  const pForm = $("polygonForm");
+  if (pForm) pForm.addEventListener("submit", (e) => { e.preventDefault(); submitPolygonKey(); });
+  const revertBtn = $("revertProviderBtn");
+  if (revertBtn) revertBtn.addEventListener("click", () => switchProvider("yfinance"));
+
   const clearLoc = $("clearLocBtn");
   if (clearLoc) clearLoc.addEventListener("click", async () => {
     clearLoc.disabled = true;  // guard against rapid double-clicks

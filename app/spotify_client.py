@@ -220,3 +220,9 @@ class SpotifyClient:
         params = {"device_id": device_id} if device_id else None
         await self._request("PUT", "/me/player/play", params=params,
                             json={"context_uri": context_uri}, allow_empty=True)
+
+    async def set_volume(self, volume_percent: int, device_id: Optional[str] = None) -> None:
+        params = {"volume_percent": max(0, min(100, int(volume_percent)))}
+        if device_id:
+            params["device_id"] = device_id
+        await self._request("PUT", "/me/player/volume", params=params, allow_empty=True)
